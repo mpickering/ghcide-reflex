@@ -123,7 +123,7 @@ library
         Development.IDE.Plugin
         Development.IDE.Plugin.Completions
         Development.IDE.Plugin.CodeAction
-    other-modules:
+        Development.IDE.Core.Debouncer
         Development.IDE.Core.Compile
         Development.IDE.Core.Preprocessor
         Development.IDE.Core.FileExists
