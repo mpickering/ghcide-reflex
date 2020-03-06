@@ -5,7 +5,7 @@
 {-# LANGUAGE RankNTypes            #-}
 
 module Development.IDE.LSP.Notifications
-    ( setHandlersNotifications
+    ( --setHandlersNotifications
     ) where
 
 import           Development.IDE.LSP.Server
@@ -24,11 +24,11 @@ import           Data.Maybe
 import qualified Data.HashSet                     as S
 import qualified Data.Text                        as Text
 
-import           Development.IDE.Core.FileStore   (setSomethingModified)
-import           Development.IDE.Core.FileExists  (modifyFileExists)
+--import           Development.IDE.Core.FileStore   (setSomethingModified)
+--import           Development.IDE.Core.FileExists  (modifyFileExists)
 import           Development.IDE.Core.OfInterest
 
-
+{-
 whenUriFile :: Uri -> (NormalizedFilePath -> IO ()) -> IO ()
 whenUriFile uri act = whenJust (LSP.uriToFilePath uri) $ act . toNormalizedFilePath
 
@@ -79,3 +79,4 @@ setHandlersNotifications = PartialHandlers $ \WithMessage{..} x -> return x
               $ add       (foldMap (S.singleton . parseWorkspaceFolder) (_added   events))
               . substract (foldMap (S.singleton . parseWorkspaceFolder) (_removed events))
     }
+    -}

@@ -1,11 +1,12 @@
 {-# LANGUAGE OverloadedLists      #-}
 {-# LANGUAGE TypeFamilies         #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 module Development.IDE.Core.FileExists
   ( fileExistsRules
-  , modifyFileExists
   , getFileExists
   )
+
 where
 
 import           Control.Concurrent.Extra
@@ -20,30 +21,24 @@ import           Data.Maybe
 import qualified Data.Text                     as T
 import           Development.IDE.Core.FileStore
 import           Development.IDE.Core.IdeConfiguration
-import           Development.IDE.Core.Shake
+import           Development.IDE.Core.Reflex
 import           Development.IDE.Types.Location
-import           Development.Shake
-import           Development.Shake.Classes
 import           GHC.Generics
 import           Language.Haskell.LSP.Messages
 import           Language.Haskell.LSP.Types
 import           Language.Haskell.LSP.Types.Capabilities
 import qualified System.Directory as Dir
+import Control.Monad.IO.Class
+import Development.IDE.Core.RuleTypes
 
--- | A map for tracking the file existence
-type FileExistsMap = (HashMap NormalizedFilePath Bool)
 
 -- | A wrapper around a mutable 'FileExistsMap'
-newtype FileExistsMapVar = FileExistsMapVar (Var FileExistsMap)
-
-instance IsIdeGlobal FileExistsMapVar
-
 -- | Grab the current global value of 'FileExistsMap' without acquiring a dependency
-getFileExistsMapUntracked :: Action FileExistsMap
+getFileExistsMapUntracked :: _ => ActionM t m FileExistsMap
 getFileExistsMapUntracked = do
-  FileExistsMapVar v <- getIdeGlobalAction
-  liftIO $ readVar v
+  useNoFile_ FileExistsMapVar
 
+{-
 -- | Modify the global store of file exists
 modifyFileExistsAction :: (FileExistsMap -> IO FileExistsMap) -> Action ()
 modifyFileExistsAction f = do
@@ -62,17 +57,9 @@ modifyFileExists state changes = do
     modifyVar_ var $ evaluate . HashMap.union changesMap
     -- flush previous values
     mapM_ (deleteValue state GetFileExists . fst) changes
+    -}
 
 -------------------------------------------------------------------------------------
-
-type instance RuleResult GetFileExists = Bool
-
-data GetFileExists = GetFileExists
-    deriving (Eq, Show, Typeable, Generic)
-
-instance NFData   GetFileExists
-instance Hashable GetFileExists
-instance Binary   GetFileExists
 
 -- | Returns True if the file exists
 --   Note that a file is not considered to exist unless it is saved to disk.
@@ -83,52 +70,53 @@ instance Binary   GetFileExists
 --     2. The editor creates a new buffer @B.hs@
 --        Unless the editor also sends a @DidChangeWatchedFile@ event, ghcide will not pick it up
 --        Most editors, e.g. VSCode, only send the event when the file is saved to disk.
-getFileExists :: NormalizedFilePath -> Action Bool
-getFileExists fp = use_ GetFileExists fp
+getFileExists :: NormalizedFilePath -> ActionM t m Bool
+getFileExists fp = undefined -- TODO
+
 
 -- | Installs the 'getFileExists' rules.
 --   Provides a fast implementation if client supports dynamic watched files.
 --   Creates a global state as a side effect in that case.
-fileExistsRules :: IO LspId -> ClientCapabilities -> VFSHandle -> Rules ()
-fileExistsRules getLspId ClientCapabilities{_workspace}
+fileExistsRules :: IO LspId -> ClientCapabilities -> VFSHandle -> Rules
+fileExistsRules getLspId ClientCapabilities{_workspace} vfs
   | Just WorkspaceClientCapabilities{_didChangeWatchedFiles} <- _workspace
   , Just DidChangeWatchedFilesClientCapabilities{_dynamicRegistration} <- _didChangeWatchedFiles
   , Just True <- _dynamicRegistration
-  = fileExistsRulesFast getLspId
-  | otherwise = fileExistsRulesSlow
+  = [] -- fileExistsRulesFast getLspId -- Should have an add global
+  | otherwise = []
 
 --   Requires an lsp client that provides WatchedFiles notifications.
-fileExistsRulesFast :: IO LspId -> VFSHandle -> Rules ()
-fileExistsRulesFast getLspId vfs = do
-  addIdeGlobal . FileExistsMapVar =<< liftIO (newVar [])
-  defineEarlyCutoff $ \GetFileExists file -> do
-    isWf <- isWorkspaceFile file
-    if isWf then fileExistsFast getLspId vfs file else fileExistsSlow vfs file
+fileExistsRulesFast :: _ => IO LspId -> VFSHandle -> NormalizedFilePath -> ActionM t m Bool
+fileExistsRulesFast getLspId vfs file = do
+  isWf <- undefined --isWorkspaceFile file
+  if isWf then fileExistsFast getLspId vfs file else fileExistsSlow file
 
-fileExistsFast :: IO LspId -> VFSHandle -> NormalizedFilePath -> Action (Maybe BS.ByteString, ([a], Maybe Bool))
+fileExistsFast :: _ => IO LspId -> VFSHandle -> NormalizedFilePath -> ActionM t m Bool
 fileExistsFast getLspId vfs file = do
     fileExistsMap <- getFileExistsMapUntracked
     let mbFilesWatched = HashMap.lookup file fileExistsMap
     case mbFilesWatched of
-      Just fv -> pure (summarizeExists fv, ([], Just fv))
+      Just fv -> return fv
       Nothing -> do
         exist                   <- liftIO $ getFileExistsVFS vfs file
-        ShakeExtras { eventer } <- getShakeExtras
+        --ShakeExtras { eventer } <- getShakeExtras
 
         -- add a listener for VFS Create/Delete file events,
         -- taking the FileExistsMap lock to prevent race conditions
         -- that would lead to multiple listeners for the same path
+        {-
         modifyFileExistsAction $ \x -> do
           case HashMap.alterF (,Just exist) file x of
             (Nothing, x') -> do
             -- if the listener addition fails, we never recover. This is a bug.
-              addListener eventer file
+              addListener undefined file
               return x'
             (Just _, _) ->
               -- if the key was already there, do nothing
               return x
+              -}
 
-        pure (summarizeExists exist, ([], Just exist))
+        pure exist
  where
   addListener eventer fp = do
     reqId <- getLspId
@@ -150,15 +138,23 @@ fileExistsFast getLspId vfs file = do
 summarizeExists :: Bool -> Maybe BS.ByteString
 summarizeExists x = Just $ if x then BS.singleton 1 else BS.empty
 
-fileExistsRulesSlow:: VFSHandle -> Rules ()
+{-
+fileExistsRulesSlow:: VFSHandle -> WRule
 fileExistsRulesSlow vfs =
-  defineEarlyCutoff $ \GetFileExists file -> fileExistsSlow vfs file
+  defineEarlyCutoff GetFileExists $ \file -> fileExistsSlow vfs file
 
 fileExistsSlow :: VFSHandle -> NormalizedFilePath -> Action (Maybe BS.ByteString, ([a], Maybe Bool))
 fileExistsSlow vfs file = do
     alwaysRerun
     exist <- liftIO $ getFileExistsVFS vfs file
     pure (summarizeExists exist, ([], Just exist))
+
+-}
+
+fileExistsSlow :: _ => NormalizedFilePath -> ActionM t m Bool
+fileExistsSlow f = do
+  h <- useNoFile_ GetVFSHandle
+  liftIO $ getFileExistsVFS h f
 
 getFileExistsVFS :: VFSHandle -> NormalizedFilePath -> IO Bool
 getFileExistsVFS vfs file = do

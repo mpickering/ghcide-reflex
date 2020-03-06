@@ -3,12 +3,12 @@
 
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 
 -- | Utilities and state for the files of interest - those which are currently
 --   open in the editor. The useful function is 'getFilesOfInterest'.
 module Development.IDE.Core.OfInterest(
-    ofInterestRules,
-    getFilesOfInterest, setFilesOfInterest, modifyFilesOfInterest,
+    ofInterestRules, getFilesOfInterest
     ) where
 
 import Control.Concurrent.Extra
@@ -24,38 +24,30 @@ import qualified Data.HashSet as HashSet
 import qualified Data.Text as T
 import Data.Tuple.Extra
 import Data.Functor
-import Development.Shake
 
 import Development.IDE.Types.Location
 import Development.IDE.Types.Logger
-import Development.IDE.Core.Shake
+import Development.IDE.Core.Reflex
+import Development.IDE.Core.RuleTypes
 
-
-newtype OfInterestVar = OfInterestVar (Var (HashSet NormalizedFilePath))
-instance IsIdeGlobal OfInterestVar
-
-type instance RuleResult GetFilesOfInterest = HashSet NormalizedFilePath
-
-data GetFilesOfInterest = GetFilesOfInterest
-    deriving (Eq, Show, Typeable, Generic)
-instance Hashable GetFilesOfInterest
-instance NFData   GetFilesOfInterest
-instance Binary   GetFilesOfInterest
 
 
 -- | The rule that initialises the files of interest state.
-ofInterestRules :: Rules ()
+ofInterestRules :: Rules
 ofInterestRules = do
-    addIdeGlobal . OfInterestVar =<< liftIO (newVar HashSet.empty)
+    [addIdeGlobal OfInterestVar
+      --(liftIO (newVar HashSet.empty))
+      undefined]
+      {-
     defineEarlyCutoff $ \GetFilesOfInterest _file -> assert (null $ fromNormalizedFilePath _file) $ do
         alwaysRerun
         filesOfInterest <- getFilesOfInterestUntracked
         pure (Just $ BS.fromString $ show filesOfInterest, ([], Just filesOfInterest))
+        -}
 
 
--- | Get the files that are open in the IDE.
-getFilesOfInterest :: Action (HashSet NormalizedFilePath)
-getFilesOfInterest = useNoFile_ GetFilesOfInterest
+getFilesOfInterest :: _ => ActionM t m (HashSet NormalizedFilePath)
+getFilesOfInterest = useNoFile_ OfInterestVar
 
 
 
@@ -64,6 +56,7 @@ getFilesOfInterest = useNoFile_ GetFilesOfInterest
 
 -- | Set the files-of-interest - not usually necessary or advisable.
 --   The LSP client will keep this information up to date.
+{-
 setFilesOfInterest :: IdeState -> HashSet NormalizedFilePath -> IO ()
 setFilesOfInterest state files = modifyFilesOfInterest state (const files)
 
@@ -80,3 +73,4 @@ modifyFilesOfInterest state f = do
     files <- modifyVar var $ pure . dupe . f
     logDebug (ideLogger state) $ "Set files of interest to: " <> T.pack (show $ HashSet.toList files)
     void $ shakeRun state []
+    -}

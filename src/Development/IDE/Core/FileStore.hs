@@ -1,28 +1,30 @@
+
 -- Copyright (c) 2019 The DAML Authors. All rights reserved.
 -- SPDX-License-Identifier: Apache-2.0
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 
 module Development.IDE.Core.FileStore(
     getFileContents,
     getVirtualFile,
-    setBufferModified,
+--    setBufferModified,
     setSomethingModified,
+    getModificationTime,
     fileStoreRules,
     VFSHandle,
     makeVFSHandle,
     makeLSPVFSHandle
     ) where
 
+import Control.Monad.IO.Class
 import Development.IDE.GHC.Orphans()
-import           Development.IDE.Core.Shake
+import           Development.IDE.Core.Reflex
 import Control.Concurrent.Extra
 import qualified Data.Map.Strict as Map
 import Data.Maybe
 import qualified Data.Text as T
 import           Control.Monad.Extra
-import           Development.Shake
-import           Development.Shake.Classes
 import           Control.Exception
 import           GHC.Generics
 import Data.Either.Extra
@@ -31,6 +33,7 @@ import qualified Data.ByteString.Char8 as BS
 import Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
 import qualified Data.Rope.UTF16 as Rope
+import Development.IDE.Core.RuleTypes
 
 #ifdef mingw32_HOST_OS
 import Data.Time
@@ -47,18 +50,6 @@ import qualified System.Posix.Error as Posix
 import Language.Haskell.LSP.Core
 import Language.Haskell.LSP.VFS
 
--- | haskell-lsp manages the VFS internally and automatically so we cannot use
--- the builtin VFS without spawning up an LSP server. To be able to test things
--- like `setBufferModified` we abstract over the VFS implementation.
-data VFSHandle = VFSHandle
-    { getVirtualFile :: NormalizedUri -> IO (Maybe VirtualFile)
-        -- ^ get the contents of a virtual file
-    , setVirtualFileContents :: Maybe (NormalizedUri -> Maybe T.Text -> IO ())
-        -- ^ set a specific file to a value. If Nothing then we are ignoring these
-        --   signals anyway so can just say something was modified
-    }
-
-instance IsIdeGlobal VFSHandle
 
 makeVFSHandle :: IO VFSHandle
 makeVFSHandle = do
@@ -82,25 +73,16 @@ makeLSPVFSHandle lspFuncs = VFSHandle
    }
 
 
--- | Get the contents of a file, either dirty (if the buffer is modified) or Nothing to mean use from disk.
-type instance RuleResult GetFileContents = (FileVersion, Maybe T.Text)
 
-data GetFileContents = GetFileContents
-    deriving (Eq, Show, Generic)
-instance Hashable GetFileContents
-instance NFData   GetFileContents
-instance Binary   GetFileContents
-
-getModificationTimeRule :: VFSHandle -> Rules ()
-getModificationTimeRule vfs =
-    defineEarlyCutoff $ \GetModificationTime file -> do
+getModificationTime :: MonadIO m => VFSHandle -> NormalizedFilePath -> m (Maybe BS.ByteString, IdeResult FileVersion)
+getModificationTime vfs file = do
         let file' = fromNormalizedFilePath file
         let wrap time@(l,s) = (Just $ BS.pack $ show time, ([], Just $ ModificationTime l s))
-        alwaysRerun
         mbVirtual <- liftIO $ getVirtualFile vfs $ filePathToUri' file
         case mbVirtual of
             Just (virtualFileVersion -> ver) ->
-                pure (Just $ BS.pack $ show ver, ([], Just $ VFSVersion ver))
+                pure ( Just $ BS.pack $ show ver
+                     , ([], Just $ VFSVersion ver))
             Nothing -> liftIO $ fmap wrap (getModTime file')
               `catch` \(e :: IOException) -> do
                 let err | isDoesNotExistError e = "File does not exist: " ++ file'
@@ -137,17 +119,20 @@ getModificationTimeRule vfs =
 foreign import ccall "getmodtime" c_getModTime :: CString -> Ptr CTime -> Ptr CLong -> IO Int
 #endif
 
-getFileContentsRule :: VFSHandle -> Rules ()
+getFileContentsRule :: VFSHandle -> WRule
 getFileContentsRule vfs =
-    define $ \GetFileContents file -> do
+    defineEarlyCutoff GetFileContents $ \file -> do
         -- need to depend on modification time to introduce a dependency with Cutoff
-        time <- use_ GetModificationTime file
-        res <- liftIO $ ideTryIOException file $ do
-            mbVirtual <- getVirtualFile vfs $ filePathToUri' file
-            pure $ Rope.toText . _text <$> mbVirtual
-        case res of
-            Left err -> return ([err], Nothing)
-            Right contents -> return ([], Just (time, contents))
+        (h, (diags, mtime)) <- getModificationTime vfs file
+        case mtime of
+          Nothing -> return (h, (diags, Nothing))
+          Just ver ->  do
+            res <- liftIO $ ideTryIOException file $ do
+              mbVirtual <- getVirtualFile vfs $ filePathToUri' file
+              pure $ Rope.toText . _text <$> mbVirtual
+            case res of
+              Left err -> return (h, ([err], Nothing))
+              Right contents -> return (h, ([], Just (ver,contents)))
 
 ideTryIOException :: NormalizedFilePath -> IO a -> IO (Either FileDiagnostic a)
 ideTryIOException fp act =
@@ -156,32 +141,36 @@ ideTryIOException fp act =
       <$> try act
 
 
-getFileContents :: NormalizedFilePath -> Action (FileVersion, Maybe T.Text)
+getFileContents :: _ => NormalizedFilePath -> ActionM t m (FileVersion, Maybe T.Text)
 getFileContents = use_ GetFileContents
 
-fileStoreRules :: VFSHandle -> Rules ()
+fileStoreRules :: VFSHandle -> Rules
 fileStoreRules vfs = do
-    addIdeGlobal vfs
-    getModificationTimeRule vfs
-    getFileContentsRule vfs
-
+    --addIdeGlobal vfs
+    --getModificationTimeRule vfs
+    [getFileContentsRule vfs]
 
 -- | Notify the compiler service that a particular file has been modified.
 --   Use 'Nothing' to say the file is no longer in the virtual file system
 --   but should be sourced from disk, or 'Just' to give its new value.
+--
+   {-
 setBufferModified :: IdeState -> NormalizedFilePath -> Maybe T.Text -> IO ()
 setBufferModified state absFile contents = do
     VFSHandle{..} <- getIdeGlobalState state
     whenJust setVirtualFileContents $ \set ->
         set (filePathToUri' absFile) contents
     void $ shakeRun state []
+    -}
 
 -- | Note that some buffer somewhere has been modified, but don't say what.
 --   Only valid if the virtual file system was initialised by LSP, as that
 --   independently tracks which files are modified.
 setSomethingModified :: IdeState -> IO ()
-setSomethingModified state = do
+setSomethingModified state = undefined
+{-
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $
         fail "setSomethingModified can't be called on this type of VFSHandle"
     void $ shakeRun state []
+    -}

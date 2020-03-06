@@ -49,8 +49,8 @@ import Data.IORef (readIORef)
 import Name (nameModule_maybe, nameOccName)
 
 plugin :: Plugin c
-plugin = codeActionPlugin codeAction <> Plugin mempty setHandlersCodeLens
-
+plugin = Plugin [] --codeActionPlugin  codeAction -- <> Plugin mempty -- setHandlersCodeLens
+{-
 -- | Generate code actions.
 codeAction
     :: LSP.LspFuncs c
@@ -512,3 +512,4 @@ filterNewlines = T.concat  . T.lines
 
 unifySpaces :: T.Text -> T.Text
 unifySpaces    = T.unwords . T.words
+-}

@@ -3,6 +3,11 @@
 
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE GADTs               #-}
+{-# LANGUAGE ConstraintKinds               #-}
+{-# LANGUAGE PolyKinds               #-}
+{-# LANGUAGE TemplateHaskell               #-}
+{-# LANGUAGE FlexibleContexts               #-}
 
 -- | A Shake implementation of the compiler service, built
 --   using the "Shaker" abstraction layer for in-memory use.
@@ -27,23 +32,96 @@ import HscTypes (CgGuts, Linkable, HomeModInfo, ModDetails)
 
 import           Development.IDE.Spans.Type
 import           Development.IDE.Import.FindImports (ArtifactsLocation)
+import Data.GADT.Compare.TH
+import Development.IDE.Types.Options
+import Data.GADT.Show.TH
+
+import Language.Haskell.LSP.Core
+import Language.Haskell.LSP.VFS
+import qualified Data.Text as T
+import Development.IDE.Types.Diagnostics
+import Development.IDE.Types.Location
+import Data.HashSet (HashSet)
+import Data.HashMap.Strict (HashMap)
+import Control.Monad.Ref
+import Reflex.Host.Class
+import {-# SOURCE #-} Development.IDE.Core.Reflex
+import Control.Monad.IO.Class
+
+type LocatedImports = ([(Located ModuleName, Maybe ArtifactsLocation)], S.Set InstalledUnitId)
+
+-- Per module rules
+data RuleType a where
+--  GetFileExists :: RuleType Bool
+  GetFileContents :: RuleType (FileVersion, Maybe T.Text)
+  GetParsedModule :: RuleType ParsedModule
+  GetLocatedImports :: RuleType LocatedImports
+  GetSpanInfo :: RuleType SpansInfo
+  GetDependencyInformation :: RuleType DependencyInformation
+  GetDependencies :: RuleType TransitiveDependencies
+  GetTypecheckedModule :: RuleType TcModuleResult
+  ReportImportCycles :: RuleType ()
+  GenerateCore :: RuleType (SafeHaskellMode, CgGuts, ModDetails)
+  GenerateByteCode :: RuleType Linkable
+  GhcSession :: RuleType HscEnvEq
+  GetHiFile :: RuleType HiFileResult
+  GetModIface :: RuleType HiFileResult
+  IsFileOfInterest :: RuleType Bool
+
+data GlobalType a where
+  GetHscEnv :: GlobalType (GetHscEnvArgs -> HscEnvEq)
+  GhcSessionIO :: GlobalType GhcSessionFun
+  GetEnv :: GlobalType HscEnv
+  GetIdeOptions :: GlobalType IdeOptions
+  OfInterestVar :: GlobalType (HashSet NormalizedFilePath)
+  FileExistsMapVar :: GlobalType FileExistsMap
+  GetVFSHandle :: GlobalType VFSHandle
+
+data GetHscEnvArgs = GetHscEnvArgs
+    { hscenvOptions :: [String]        -- componentOptions from hie-bios
+    , hscenvDependencies :: [FilePath] -- componentDependencies from hie-bios
+    }
+    deriving (Eq, Show, Typeable, Generic, Ord)
+instance Hashable GetHscEnvArgs
+instance NFData   GetHscEnvArgs
+instance Binary   GetHscEnvArgs
+
+-- | A map for tracking the file existence
+type FileExistsMap = (HashMap NormalizedFilePath Bool)
+
+-- | haskell-lsp manages the VFS internally and automatically so we cannot use
+-- the builtin VFS without spawning up an LSP server. To be able to test things
+-- like `setBufferModified` we abstract over the VFS implementation.
+data VFSHandle = VFSHandle
+    { getVirtualFile :: NormalizedUri -> IO (Maybe VirtualFile)
+        -- ^ get the contents of a virtual file
+    , setVirtualFileContents :: Maybe (NormalizedUri -> Maybe T.Text -> IO ())
+        -- ^ set a specific file to a value. If Nothing then we are ignoring these
+        --   signals anyway so can just say something was modified
+    }
 
 
--- NOTATION
---   Foo+ means Foo for the dependencies
---   Foo* means Foo for me and Foo+
 
--- | The parse tree for the file using GetFileContents
-type instance RuleResult GetParsedModule = ParsedModule
+newtype GhcSessionFun = GhcSessionFun (FilePath -> ForallAction HscEnvEq)
+instance Show GhcSessionFun where show _ = "GhcSessionFun"
+instance NFData GhcSessionFun where rnf !_ = ()
 
--- | The dependency information produced by following the imports recursively.
--- This rule will succeed even if there is an error, e.g., a module could not be located,
--- a module could not be parsed or an import cycle.
-type instance RuleResult GetDependencyInformation = DependencyInformation
+data FileVersion
+    = VFSVersion Int
+    | ModificationTime
+      !Int   -- ^ Large unit (platform dependent, do not make assumptions)
+      !Int   -- ^ Small unit (platform dependent, do not make assumptions)
+    deriving (Show, Generic)
 
--- | Transitive module and pkg dependencies based on the information produced by GetDependencyInformation.
--- This rule is also responsible for calling ReportImportCycles for each file in the transitive closure.
-type instance RuleResult GetDependencies = TransitiveDependencies
+instance NFData FileVersion
+
+vfsVersion :: FileVersion -> Maybe Int
+vfsVersion (VFSVersion i) = Just i
+vfsVersion ModificationTime{} = Nothing
+
+modificationTime :: FileVersion -> Maybe (Int, Int)
+modificationTime VFSVersion{} = Nothing
+modificationTime (ModificationTime large small) = Just (large, small)
 
 -- | Contains the typechecked module and the OrigNameCache entry for
 -- that module.
@@ -72,6 +150,27 @@ instance NFData HiFileResult where
 
 instance Show HiFileResult where
     show = show . hirModSummary
+
+concat <$> sequence [deriveGEq ''RuleType, deriveGCompare ''RuleType, deriveGShow ''RuleType]
+concat <$> sequence [deriveGEq ''GlobalType, deriveGCompare ''GlobalType, deriveGShow ''GlobalType]
+
+{-
+-- NOTATION
+--   Foo+ means Foo for the dependencies
+--   Foo* means Foo for me and Foo+
+
+-- | The parse tree for the file using GetFileContents
+type instance RuleResult GetParsedModule = ParsedModule
+
+-- | The dependency information produced by following the imports recursively.
+-- This rule will succeed even if there is an error, e.g., a module could not be located,
+-- a module could not be parsed or an import cycle.
+type instance RuleResult GetDependencyInformation = DependencyInformation
+
+-- | Transitive module and pkg dependencies based on the information produced by GetDependencyInformation.
+-- This rule is also responsible for calling ReportImportCycles for each file in the transitive closure.
+type instance RuleResult GetDependencies = TransitiveDependencies
+
 
 -- | The type checked version of this file, requires TypeCheck+
 type instance RuleResult TypeCheck = TcModuleResult
@@ -183,3 +282,4 @@ data IsFileOfInterest = IsFileOfInterest
 instance Hashable IsFileOfInterest
 instance NFData   IsFileOfInterest
 instance Binary   IsFileOfInterest
+-}

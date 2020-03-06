@@ -4,8 +4,8 @@
 
 -- | Display information on hover.
 module Development.IDE.LSP.HoverDefinition
-    ( setHandlersHover
-    , setHandlersDefinition
+    ( --setHandlersHover
+    --, setHandlersDefinition
     ) where
 
 import           Development.IDE.Core.Rules
@@ -20,6 +20,7 @@ import           Language.Haskell.LSP.Types
 
 import qualified Data.Text as T
 
+{-
 gotoDefinition :: IdeState -> TextDocumentPositionParams -> IO (Either ResponseError LocationResponseParams)
 hover          :: IdeState -> TextDocumentPositionParams -> IO (Either ResponseError (Maybe Hover))
 gotoDefinition = request "Definition" getDefinition (MultiLoc []) SingleLoc
@@ -57,3 +58,4 @@ logAndRunRequest label getResults ide pos path = do
     label <> " request at position " <> T.pack (showPosition pos) <>
     " in file: " <> T.pack path
   runAction ide $ getResults filePath pos
+  -}

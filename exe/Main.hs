@@ -4,6 +4,8 @@
 {-# LANGUAGE CPP #-} -- To get precise GHC version
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Main(main) where
 
@@ -29,7 +31,7 @@ import Development.IDE.Core.FileStore
 import Development.IDE.Core.OfInterest
 import Development.IDE.Core.Service
 import Development.IDE.Core.Rules
-import Development.IDE.Core.Shake
+import Development.IDE.Core.Reflex hiding (getSession)
 import Development.IDE.Core.RuleTypes
 import Development.IDE.LSP.Protocol
 import Development.IDE.Types.Location
@@ -53,7 +55,7 @@ import System.IO
 import System.Exit
 import Paths_ghcide
 import Development.GitRev
-import Development.Shake (Action, RuleResult, Rules, action, doesFileExist, need)
+--import Development.Shake (Action, RuleResult, Rules, action, doesFileExist, need)
 import qualified Data.HashSet as HashSet
 import qualified Data.Map.Strict as Map
 
@@ -66,6 +68,7 @@ import HIE.Bios.Environment
 import HIE.Bios
 import HIE.Bios.Cradle
 import HIE.Bios.Types
+import Development.IDE.Core.Service
 
 -- Prefix for the cache path
 cacheDir :: String
@@ -119,16 +122,12 @@ main = do
         t <- offsetTime
         hPutStrLn stderr "Starting LSP server..."
         hPutStrLn stderr "If you are seeing this in a terminal, you probably should have run ghcide WITHOUT the --lsp option!"
-        runLanguageServer def (pluginHandler plugins) onInitialConfiguration onConfigurationChange $ \getLspId event vfs caps -> do
-            t <- t
-            hPutStrLn stderr $ "Started LSP server in " ++ showDuration t
-            let options = (defaultIdeOptions $ loadSession dir)
-                    { optReportProgress = clientSupportsProgress caps
-                    , optShakeProfiling = argsShakeProfiling
-                    }
-            debouncer <- newAsyncDebouncer
-            initialise caps (loadGhcSessionIO >> mainRule >> pluginRules plugins >> action kick)
-                getLspId event (logger minBound) debouncer options vfs
+
+        let options = defaultIdeOptions $ ForallAction (loadSession dir)
+        debouncer <- newAsyncDebouncer
+        initialise mainRule --(loadGhcSessionIO >> mainRule -- >> pluginRules plugins >> action kick)
+            (logger minBound) debouncer options
+            (runLanguageServer def def onInitialConfiguration onConfigurationChange)
     else do
         putStrLn $ "Ghcide setup tester in " ++ dir ++ "."
         putStrLn "Report bugs at https://github.com/digital-asset/ghcide/issues"
@@ -157,18 +156,23 @@ main = do
         vfs <- makeVFSHandle
         let cradlesToSessions = Map.fromList $ zip ucradles sessions
         let filesToCradles = Map.fromList $ zip files cradles
-        let grab file = fromMaybe (head sessions) $ do
+
+        let grab :: _ => FilePath -> ActionM t m HscEnvEq
+            grab file = return $ fromMaybe (head sessions) $ do
                 cradle <- Map.lookup file filesToCradles
                 Map.lookup cradle cradlesToSessions
 
         let options =
-              (defaultIdeOptions $ return $ return . grab)
+              (defaultIdeOptions $ ForallAction (return $ \fp -> ForallAction (grab fp)))
                     { optShakeProfiling = argsShakeProfiling }
-        ide <- initialise def (loadGhcSessionIO >> mainRule) (pure $ IdInt 0) (showEvent lock) (logger Info) noopDebouncer options vfs
+
+        ide <- initialise (loadGhcSessionIO ++ mainRule) (logger Info) noopDebouncer options
+                           (\_ f -> f (vfs, def, (pure $ IdInt 0), (showEvent lock)))
 
         putStrLn "\nStep 6/6: Type checking the files"
-        setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
-        results <- runActionSync ide $ uses TypeCheck $ map toNormalizedFilePath files
+        --setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
+        -- Need to add a way to externally inspect nodes
+        results <- undefined -- uses GetTypecheckedModule $ map toNormalizedFilePath files
         let (worked, failed) = partition fst $ zip (map isJust results) files
         when (failed /= []) $
             putStr $ unlines $ "Files that failed:" : map ((++) " * " . snd) failed
@@ -192,10 +196,10 @@ expandFiles = concatMapM $ \x -> do
         return files
 
 
-kick :: Action ()
+kick :: _ => ActionM t m ()
 kick = do
     files <- getFilesOfInterest
-    void $ uses TypeCheck $ HashSet.toList files
+    void $ uses GetTypecheckedModule $ HashSet.toList files
 
 -- | Print an LSP event.
 showEvent :: Lock -> FromServerMessage -> IO ()
@@ -204,27 +208,20 @@ showEvent lock (EventFileDiagnostics (toNormalizedFilePath -> file) diags) =
     withLock lock $ T.putStrLn $ showDiagnosticsColored $ map (file,ShowDiag,) diags
 showEvent lock e = withLock lock $ print e
 
-
+{-
 -- Rule type for caching GHC sessions.
 type instance RuleResult GetHscEnv = HscEnvEq
 
-data GetHscEnv = GetHscEnv
-    { hscenvOptions :: [String]        -- componentOptions from hie-bios
-    , hscenvDependencies :: [FilePath] -- componentDependencies from hie-bios
-    }
-    deriving (Eq, Show, Typeable, Generic)
-instance Hashable GetHscEnv
-instance NFData   GetHscEnv
-instance Binary   GetHscEnv
+-}
 
 
-loadGhcSessionIO :: Rules ()
-loadGhcSessionIO =
+loadGhcSessionIO :: Rules
+loadGhcSessionIO = []
     -- This rule is for caching the GHC session. E.g., even when the cabal file
     -- changed, if the resulting flags did not change, we would continue to use
     -- the existing session.
-    defineNoFile $ \(GetHscEnv opts deps) ->
-        liftIO $ createSession $ ComponentOptions opts deps
+    {-[addIdeGlobal GetHscEnv $ \(GetHscEnvArgs opts deps) ->
+        liftIO $ createSession $ ComponentOptions opts deps] -}
 
 
 getComponentOptions :: Cradle a -> IO ComponentOptions
@@ -285,7 +282,7 @@ setHiDir f d =
     -- override user settings to avoid conflicts leading to recompilation
     d { hiDir      = Just f}
 
-cradleToSession :: Maybe FilePath -> Cradle a -> Action HscEnvEq
+cradleToSession :: _ => Maybe FilePath -> Cradle a -> ActionM t m HscEnvEq
 cradleToSession mbYaml cradle = do
     cmpOpts <- liftIO $ getComponentOptions cradle
     let opts = componentOptions cmpOpts
@@ -294,12 +291,13 @@ cradleToSession mbYaml cradle = do
                   -- For direct cradles, the hie.yaml file itself must be watched.
                   Just yaml | isDirectCradle cradle -> yaml : deps
                   _ -> deps
-    existingDeps <- filterM doesFileExist deps'
-    need existingDeps
-    useNoFile_ $ GetHscEnv opts deps
+    existingDeps <- liftIO $ filterM (IO.doesFileExist) deps'
+    --need existingDeps
+    f <- useNoFile_ $ GetHscEnv
+    return (f (GetHscEnvArgs opts deps))
 
 
-loadSession :: FilePath -> Action (FilePath -> Action HscEnvEq)
+loadSession :: _ => FilePath -> ActionM t m (FilePath -> ForallAction HscEnvEq)
 loadSession dir = liftIO $ do
     cradleLoc <- memoIO $ \v -> do
         res <- findCradle v
@@ -308,11 +306,11 @@ loadSession dir = liftIO $ do
         -- e.g. see https://github.com/digital-asset/ghcide/issues/126
         res' <- traverse IO.makeAbsolute res
         return $ normalise <$> res'
-    let session :: Maybe FilePath -> Action HscEnvEq
+    let session :: C t => Maybe FilePath -> ActionM t (HostFrame t) HscEnvEq
         session file = do
           c <- liftIO $ maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle file
           cradleToSession file c
-    return $ \file -> session =<< liftIO (cradleLoc file)
+    return $ \file -> ForallAction (session =<< liftIO (cradleLoc file))
 
 
 -- | Memoize an IO function, with the characteristics:

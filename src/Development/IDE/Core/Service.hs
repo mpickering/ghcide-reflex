@@ -3,12 +3,13 @@
 
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE PolyKinds #-}
 
 -- | A Shake implementation of the compiler service, built
 --   using the "Shaker" abstraction layer for in-memory use.
 --
-module Development.IDE.Core.Service(
-    getIdeOptions,
+module Development.IDE.Core.Service( initialise
+    {-
     IdeState, initialise, shutdown,
     runAction,
     runActionSync,
@@ -16,6 +17,7 @@ module Development.IDE.Core.Service(
     getDiagnostics, unsafeClearDiagnostics,
     ideLogger,
     updatePositionMapping,
+    -}
     ) where
 
 import           Control.Concurrent.Extra
@@ -28,50 +30,43 @@ import           Development.IDE.Core.FileStore  (VFSHandle, fileStoreRules)
 import           Development.IDE.Core.FileExists (fileExistsRules)
 import           Development.IDE.Core.OfInterest
 import Development.IDE.Types.Logger
-import           Development.Shake
 import Data.Either.Extra
 import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP
 import qualified Language.Haskell.LSP.Types.Capabilities as LSP
 
-import           Development.IDE.Core.Shake
+import           Development.IDE.Core.Reflex
+import           Development.IDE.Core.RuleTypes
+import Language.Haskell.LSP.Core
 
 
 
 newtype GlobalIdeOptions = GlobalIdeOptions IdeOptions
-instance IsIdeGlobal GlobalIdeOptions
 
 ------------------------------------------------------------
 -- Exposed API
 
 -- | Initialise the Compiler Service.
-initialise :: LSP.ClientCapabilities
-           -> Rules ()
-           -> IO LSP.LspId
-           -> (LSP.FromServerMessage -> IO ())
+initialise :: Rules
            -> Logger
            -> Debouncer LSP.NormalizedUri
            -> IdeOptions
-           -> VFSHandle
-           -> IO IdeState
-initialise caps mainRule getLspId toDiags logger debouncer options vfs =
-    shakeOpen
-        getLspId
-        toDiags
+           -> (Handlers ->
+               ((VFSHandle, LSP.ClientCapabilities, IO LSP.LspId, (LSP.FromServerMessage -> IO ())) -> IO ()) ->
+                IO () )
+           -> IO () -- IdeState
+initialise mainRule logger debouncer options start =
+    reflexOpen
         logger
         debouncer
-        (optShakeProfiling options)
-        (optReportProgress options)
-        shakeOptions
-          { shakeThreads = optThreads options
-          , shakeFiles   = fromMaybe "/dev/null" (optShakeFiles options)
-          } $ do
-            addIdeGlobal $ GlobalIdeOptions options
-            fileStoreRules vfs
-            ofInterestRules
-            fileExistsRules getLspId caps vfs
-            mainRule
-
+        options
+        start
+        (addIdeGlobal GetIdeOptions undefined --GlobalIdeOptions options
+            : (fileStoreRules undefined
+            ++ ofInterestRules -- In a global dynamic
+--            ++ fileExistsRules getLspId caps vfs
+            ++ mainRule))
+{-
 writeProfile :: IdeState -> FilePath -> IO ()
 writeProfile = shakeProfile
 
@@ -105,3 +100,4 @@ getIdeOptions :: Action IdeOptions
 getIdeOptions = do
     GlobalIdeOptions x <- getIdeGlobalAction
     return x
+    -}

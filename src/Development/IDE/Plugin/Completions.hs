@@ -26,7 +26,9 @@ import Development.IDE.Import.DependencyInformation
 
 
 plugin :: Plugin c
-plugin = Plugin produceCompletions setHandlersCompletion
+plugin = Plugin [] --setHandlersCompletion
+
+{-
 
 produceCompletions :: Rules ()
 produceCompletions =
@@ -86,3 +88,4 @@ setHandlersCompletion :: PartialHandlers c
 setHandlersCompletion = PartialHandlers $ \WithMessage{..} x -> return x{
     LSP.completionHandler = withResponse RspCompletion getCompletionsLSP
     }
+    -}

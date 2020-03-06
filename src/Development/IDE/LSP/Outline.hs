@@ -3,7 +3,7 @@
 #include "ghc-api-version.h"
 
 module Development.IDE.LSP.Outline
-  ( setHandlersOutline
+  (
   )
 where
 
@@ -28,11 +28,11 @@ import           Outputable                     ( Outputable
                                                 , showSDocUnsafe
                                                 )
 
+{-
 setHandlersOutline :: PartialHandlers c
 setHandlersOutline = PartialHandlers $ \WithMessage {..} x -> return x
   { LSP.documentSymbolHandler = withResponse RspDocumentSymbols moduleOutline
   }
-
 moduleOutline
   :: LSP.LspFuncs c -> IdeState -> DocumentSymbolParams -> IO (Either ResponseError DSResult)
 moduleOutline _lsp ideState DocumentSymbolParams { _textDocument = TextDocumentIdentifier uri }
@@ -218,3 +218,4 @@ showRdrName = pprText
 
 pprText :: Outputable a => a -> Text
 pprText = pack . showSDocUnsafe . ppr
+-}

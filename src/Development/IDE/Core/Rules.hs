@@ -5,18 +5,19 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE PatternSynonyms       #-}
+{-# LANGUAGE PartialTypeSignatures       #-}
 
 -- | A Shake implementation of the compiler service, built
 --   using the "Shaker" abstraction layer for in-memory use.
 --
 module Development.IDE.Core.Rules(
-    IdeState, GetDependencies(..), GetParsedModule(..), TransitiveDependencies(..),
-    Priority(..), GhcSessionIO(..), GhcSessionFun(..),
+    IdeState,
+    Priority(..),
     priorityTypeCheck,
     priorityGenerateCore,
     priorityFilesOfInterest,
-    runAction, useE, useNoFileE, usesE,
-    toIdeResult, defineNoFile,
+--    runAction,
+    toIdeResult,
     mainRule,
     getAtPoint,
     getDefinition,
@@ -27,6 +28,7 @@ module Development.IDE.Core.Rules(
 
 import Fingerprint
 
+import Development.IDE.Core.FileStore
 import Data.Binary
 import Data.Bifunctor (second)
 import Control.Monad.Extra
@@ -57,9 +59,10 @@ import qualified Data.Set                                 as Set
 import qualified Data.Text                                as T
 import qualified Data.Text.Encoding                       as TE
 import           Development.IDE.GHC.Error
-import           Development.Shake                        hiding (Diagnostic)
+--import           Development.Shake                        hiding (Diagnostic)
 import Development.IDE.Core.RuleTypes
 import Development.IDE.Spans.Type
+import Control.Monad.IO.Class
 
 import qualified GHC.LanguageExtensions as LangExt
 import HscTypes
@@ -67,8 +70,8 @@ import DynFlags (xopt)
 import GHC.Generics(Generic)
 
 import qualified Development.IDE.Spans.AtPoint as AtPoint
-import Development.IDE.Core.Service
-import Development.IDE.Core.Shake
+--import Development.IDE.Core.Service
+import Development.IDE.Core.Reflex
 import Development.Shake.Classes
 
 -- | This is useful for rules to convert rules that can only produce errors or
@@ -79,19 +82,20 @@ toIdeResult = either (, Nothing) (([],) . Just)
 
 -- | useE is useful to implement functions that aren’t rules but need shortcircuiting
 -- e.g. getDefinition.
-useE :: IdeRule k v => k -> NormalizedFilePath -> MaybeT Action v
-useE k = MaybeT . use k
-
+--useE :: RuleType a -> NormalizedFilePath -> MaybeT (Action v
+--useE k = MaybeT . use k
+{-
 useNoFileE :: IdeRule k v => k -> MaybeT Action v
 useNoFileE k = useE k ""
 
 usesE :: IdeRule k v => k -> [NormalizedFilePath] -> MaybeT Action [v]
 usesE k = MaybeT . fmap sequence . uses k
 
-defineNoFile :: IdeRule k v => (k -> Action v) -> Rules ()
-defineNoFile f = define $ \k file -> do
+defineNoFile :: _ => RuleType a -> (Action t m a) -> WRule
+defineNoFile f = define k $ \file -> do
     if file == "" then do res <- f k; return ([], Just res) else
         fail $ "Rule " ++ show k ++ " should always be called with the empty string for a file"
+        -}
 
 
 ------------------------------------------------------------
@@ -99,27 +103,27 @@ defineNoFile f = define $ \k file -> do
 
 -- | Get all transitive file dependencies of a given module.
 -- Does not include the file itself.
-getDependencies :: NormalizedFilePath -> Action (Maybe [NormalizedFilePath])
+getDependencies :: _ => NormalizedFilePath -> ActionM t m (Maybe [NormalizedFilePath])
 getDependencies file = fmap transitiveModuleDeps <$> use GetDependencies file
 
 -- | Try to get hover text for the name under point.
-getAtPoint :: NormalizedFilePath -> Position -> Action (Maybe (Maybe Range, [T.Text]))
+getAtPoint :: _ => NormalizedFilePath -> Position -> ActionM t m (Maybe (Maybe Range, [T.Text]))
 getAtPoint file pos = fmap join $ runMaybeT $ do
   opts <- lift getIdeOptions
-  spans <- useE GetSpanInfo file
+  spans <- MaybeT $ use GetSpanInfo file
   return $ AtPoint.atPoint opts spans pos
 
 -- | Goto Definition.
-getDefinition :: NormalizedFilePath -> Position -> Action (Maybe Location)
+getDefinition :: _ => NormalizedFilePath -> Position -> ActionM  t m (Maybe Location)
 getDefinition file pos = fmap join $ runMaybeT $ do
     opts <- lift getIdeOptions
-    spans <- useE GetSpanInfo file
+    spans <- MaybeT $ use GetSpanInfo file
     lift $ AtPoint.gotoDefinition (getHieFile file) opts (spansExprs spans) pos
 
 getHieFile
-  :: NormalizedFilePath -- ^ file we're editing
+  :: _ => NormalizedFilePath -- ^ file we're editing
   -> Module -- ^ module dep we want info for
-  -> Action (Maybe (HieFile, FilePath)) -- ^ hie stuff for the module
+  -> ActionM t m (Maybe (HieFile, FilePath)) -- ^ hie stuff for the module
 getHieFile file mod = do
   TransitiveDependencies {transitiveNamedModuleDeps} <- use_ GetDependencies file
   case find (\x -> nmdModuleName x == moduleName mod) transitiveNamedModuleDeps of
@@ -130,27 +134,34 @@ getHieFile file mod = do
     _ -> getPackageHieFile mod file
 
 
-getHomeHieFile :: NormalizedFilePath -> Action ([a], Maybe HieFile)
+getHomeHieFile :: _ => NormalizedFilePath -> ActionM t m ([a], Maybe HieFile)
 getHomeHieFile f = do
   pm <- use_ GetParsedModule f
   let normal_hie_f = toNormalizedFilePath hie_f
       hie_f = ml_hie_file $ ms_location $ pm_mod_summary pm
-  mbHieTimestamp <- use GetModificationTime normal_hie_f
-  srcTimestamp   <- use_ GetModificationTime f
+  mbHieTimestamp <- getModificationTimeM normal_hie_f
+  srcTimestamp   <- getModificationTimeM f
 
   let isUpToDate
-        | Just d <- mbHieTimestamp = comparing modificationTime d srcTimestamp == GT
+        | let d = mbHieTimestamp = comparing modificationTime d srcTimestamp == GT
         | otherwise = False
 
   unless isUpToDate $
-       void $ use_ TypeCheck f
+       void $ use_ GetTypecheckedModule f
 
   hf <- liftIO $ if isUpToDate then Just <$> loadHieFile hie_f else pure Nothing
   return ([], hf)
 
-getPackageHieFile :: Module             -- ^ Package Module to load .hie file for
+getModificationTimeM f = do
+  vfs <- useNoFile_ GetVFSHandle
+  (mb, (ds, r)) <- getModificationTime vfs f
+  case r of
+    Just v -> return v
+    Nothing -> fail  "NOTING"
+
+getPackageHieFile :: _ => Module             -- ^ Package Module to load .hie file for
                   -> NormalizedFilePath -- ^ Path of home module importing the package module
-                  -> Action (Maybe (HieFile, FilePath))
+                  -> ActionM t m (Maybe (HieFile, FilePath))
 getPackageHieFile mod file = do
     pkgState  <- hscEnv <$> use_ GhcSession file
     IdeOptions {..} <- getIdeOptions
@@ -169,7 +180,7 @@ getPackageHieFile mod file = do
         _ -> return Nothing
 
 -- | Parse the contents of a daml file.
-getParsedModule :: NormalizedFilePath -> Action (Maybe ParsedModule)
+getParsedModule :: _ => NormalizedFilePath -> ActionM t m (Maybe ParsedModule)
 getParsedModule file = use GetParsedModule file
 
 ------------------------------------------------------------
@@ -185,9 +196,9 @@ priorityGenerateCore = Priority (-1)
 priorityFilesOfInterest :: Priority
 priorityFilesOfInterest = Priority (-2)
 
-getParsedModuleRule :: Rules ()
+getParsedModuleRule :: _ => WRule
 getParsedModuleRule =
-    defineEarlyCutoff $ \GetParsedModule file -> do
+    defineEarlyCutoff GetParsedModule $ \file -> do
         (_, contents) <- getFileContents file
         packageState <- hscEnv <$> use_ GhcSession file
         opt <- getIdeOptions
@@ -200,9 +211,9 @@ getParsedModuleRule =
                     else liftIO $ Just . fingerprintToBS <$> fingerprintFromStringBuffer contents
                 pure (mbFingerprint, (diag, Just modu))
 
-getLocatedImportsRule :: Rules ()
+getLocatedImportsRule :: _ => WRule
 getLocatedImportsRule =
-    define $ \GetLocatedImports file -> do
+    define GetLocatedImports $ \file -> do
         pm <- use_ GetParsedModule file
         let ms = pm_mod_summary pm
         let imports = [(False, imp) | imp <- ms_textual_imps ms] ++ [(True, imp) | imp <- ms_srcimps ms]
@@ -227,7 +238,7 @@ getLocatedImportsRule =
 
 -- | Given a target file path, construct the raw dependency results by following
 -- imports recursively.
-rawDependencyInformation :: NormalizedFilePath -> Action RawDependencyInformation
+rawDependencyInformation :: _ => NormalizedFilePath -> ActionM t m RawDependencyInformation
 rawDependencyInformation f = do
     let initialArtifact = ArtifactsLocation f (ModLocation (Just $ fromNormalizedFilePath f) "" "") False
         (initialId, initialMap) = getPathId initialArtifact emptyPathIdMap
@@ -286,15 +297,15 @@ rawDependencyInformation f = do
     dropBootSuffix (ModLocation (Just hs_src) _ _) = reverse . drop (length @[] "-boot") . reverse $ hs_src
     dropBootSuffix _ = error "dropBootSuffix"
 
-getDependencyInformationRule :: Rules ()
+getDependencyInformationRule :: _ => WRule
 getDependencyInformationRule =
-    define $ \GetDependencyInformation file -> do
+    define GetDependencyInformation $ \file -> do
        rawDepInfo <- rawDependencyInformation file
        pure ([], Just $ processDependencyInformation rawDepInfo)
 
-reportImportCyclesRule :: Rules ()
+reportImportCyclesRule :: _ => WRule
 reportImportCyclesRule =
-    define $ \ReportImportCycles file -> fmap (\errs -> if null errs then ([], Just ()) else (errs, Nothing)) $ do
+    define ReportImportCycles $ \file -> fmap (\errs -> if null errs then ([], Just ()) else (errs, Nothing)) $ do
         DependencyInformation{..} <- use_ GetDependencyInformation file
         let fileId = pathToId depPathIdMap file
         case IntMap.lookup (getFilePathId fileId) depErrorNodes of
@@ -327,9 +338,9 @@ reportImportCyclesRule =
 
 -- returns all transitive dependencies in topological order.
 -- NOTE: result does not include the argument file.
-getDependenciesRule :: Rules ()
+getDependenciesRule :: _ => WRule
 getDependenciesRule =
-    defineEarlyCutoff $ \GetDependencies file -> do
+    defineEarlyCutoff GetDependencies $ \file -> do
         depInfo <- use_ GetDependencyInformation file
         let allFiles = reachableModules depInfo
         _ <- uses_ ReportImportCycles allFiles
@@ -338,11 +349,11 @@ getDependenciesRule =
         return (fingerprintToBS . fingerprintFingerprints <$> mbFingerprints, ([], transitiveDeps depInfo file))
 
 -- Source SpanInfo is used by AtPoint and Goto Definition.
-getSpanInfoRule :: Rules ()
+getSpanInfoRule :: _ => WRule
 getSpanInfoRule =
-    define $ \GetSpanInfo file -> do
-        tc <- use_ TypeCheck file
-        deps <- maybe (TransitiveDependencies [] [] []) fst <$> useWithStale GetDependencies file
+    define GetSpanInfo $ \file -> do
+        tc <- use_ GetTypecheckedModule file
+        deps <- maybe (TransitiveDependencies [] [] []) id <$> useWithStale GetDependencies file
         let tdeps = transitiveModuleDeps deps
         parsedDeps <- uses_ GetParsedModule tdeps
         ifaces <- uses_ GetModIface tdeps
@@ -353,14 +364,14 @@ getSpanInfoRule =
         return ([], Just x)
 
 -- Typechecks a module.
-typeCheckRule :: Rules ()
-typeCheckRule = define $ \TypeCheck file -> typeCheckRuleDefinition file
+typeCheckRule :: _ => WRule
+typeCheckRule = define GetTypecheckedModule typeCheckRuleDefinition
 
 -- This is factored out so it can be directly called from the GetModIface
 -- rule. Directly calling this rule means that on the initial load we can
 -- garbage collect all the intermediate typechecked modules rather than
 -- retain the information forever in the shake graph.
-typeCheckRuleDefinition :: NormalizedFilePath -> Action (IdeResult TcModuleResult)
+typeCheckRuleDefinition :: _ => NormalizedFilePath -> ActionM t m (IdeResult TcModuleResult)
 typeCheckRuleDefinition file = do
   pm   <- use_ GetParsedModule file
   deps <- use_ GetDependencies file
@@ -397,23 +408,23 @@ typeCheckRuleDefinition file = do
     xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
 
 
-generateCore :: NormalizedFilePath -> Action (IdeResult (SafeHaskellMode, CgGuts, ModDetails))
+generateCore :: _ => NormalizedFilePath -> ActionM t m (IdeResult (SafeHaskellMode, CgGuts, ModDetails))
 generateCore file = do
     deps <- use_ GetDependencies file
-    (tm:tms) <- uses_ TypeCheck (file:transitiveModuleDeps deps)
+    (tm:tms) <- uses_ GetTypecheckedModule (file:transitiveModuleDeps deps)
     setPriority priorityGenerateCore
     packageState <- hscEnv <$> use_ GhcSession file
     liftIO $ compileModule packageState [(tmrModSummary x, tmrModInfo x) | x <- tms] tm
 
-generateCoreRule :: Rules ()
+generateCoreRule :: _ => WRule
 generateCoreRule =
-    define $ \GenerateCore -> generateCore
+    define GenerateCore generateCore
 
-generateByteCodeRule :: Rules ()
+generateByteCodeRule :: _ => WRule
 generateByteCodeRule =
-    define $ \GenerateByteCode file -> do
+    define GenerateByteCode $ \file -> do
       deps <- use_ GetDependencies file
-      (tm : tms) <- uses_ TypeCheck (file: transitiveModuleDeps deps)
+      (tm : tms) <- uses_ GetTypecheckedModule (file: transitiveModuleDeps deps)
       session <- hscEnv <$> use_ GhcSession file
       (_, guts, _) <- use_ GenerateCore file
       liftIO $ generateByteCode session [(tmrModSummary x, tmrModInfo x) | x <- tms] tm guts
@@ -421,31 +432,24 @@ generateByteCodeRule =
 -- A local rule type to get caching. We want to use newCache, but it has
 -- thread killed exception issues, so we lift it to a full rule.
 -- https://github.com/digital-asset/daml/pull/2808#issuecomment-529639547
-type instance RuleResult GhcSessionIO = GhcSessionFun
-
-data GhcSessionIO = GhcSessionIO deriving (Eq, Show, Typeable, Generic)
-instance Hashable GhcSessionIO
-instance NFData   GhcSessionIO
-instance Binary   GhcSessionIO
-
-newtype GhcSessionFun = GhcSessionFun (FilePath -> Action HscEnvEq)
-instance Show GhcSessionFun where show _ = "GhcSessionFun"
-instance NFData GhcSessionFun where rnf !_ = ()
+--type instance RuleResult GhcSessionIO = GhcSessionFun
 
 
-loadGhcSession :: Rules ()
+
+loadGhcSession :: _ => WRule
 loadGhcSession = do
-    defineNoFile $ \GhcSessionIO -> do
-        opts <- getIdeOptions
-        GhcSessionFun <$> optGhcSession opts
-    defineEarlyCutoff $ \GhcSession file -> do
+    --defineNoFile $ \GhcSessionIO -> do
+    --    opts <- getIdeOptions
+    --    GhcSessionFun <$> optGhcSession opts
+    defineEarlyCutoff GhcSession $ \file -> do
         GhcSessionFun fun <- useNoFile_ GhcSessionIO
-        val <- fun $ fromNormalizedFilePath file
+        let ForallAction val = fun $ fromNormalizedFilePath file
+        res <- val
         opts <- getIdeOptions
-        return ("" <$ optShakeFiles opts, ([], Just val))
+        return (Nothing, ([], Just res))
 
-getHiFileRule :: Rules ()
-getHiFileRule = defineEarlyCutoff $ \GetHiFile f -> do
+getHiFileRule :: _ => WRule
+getHiFileRule = defineEarlyCutoff GetHiFile $ \f -> do
   session <- hscEnv <$> use_ GhcSession f
   -- get all dependencies interface files, to check for freshness
   (deps,_)<- use_ GetLocatedImports f
@@ -472,8 +476,8 @@ getHiFileRule = defineEarlyCutoff $ \GetHiFile f -> do
           let d = mkInterfaceFilesGenerationDiag f "Missing interface file"
           pure (Nothing, (d, Nothing))
         else do
-          hiVersion  <- use_ GetModificationTime hiFile
-          modVersion <- use_ GetModificationTime f
+          hiVersion  <- getModificationTimeM hiFile
+          modVersion <- getModificationTimeM f
           let sourceModified = LT == comparing modificationTime hiVersion modVersion
           if sourceModified
             then do
@@ -495,8 +499,8 @@ mkInterfaceFilesGenerationDiag f intro = mkDiag $ intro <> msg
       msg = ": additional resource use while generating interface files in the background."
       mkDiag = pure . ideErrorWithSource (Just "interface file loading") (Just DsInfo) f . T.pack
 
-getModIfaceRule :: Rules ()
-getModIfaceRule = define $ \GetModIface f -> do
+getModIfaceRule :: _ => WRule
+getModIfaceRule = define GetModIface $ \f -> do
     fileOfInterest <- use_ IsFileOfInterest f
     let useHiFile =
           -- Never load interface files for files of interest
@@ -507,7 +511,7 @@ getModIfaceRule = define $ \GetModIface f -> do
             return ([], Just x)
         Nothing
           | fileOfInterest -> do
-            tmr <- use TypeCheck f
+            tmr <- use GetTypecheckedModule f
             return ([], extract tmr)
           | otherwise -> do
             (diags, tmr) <- typeCheckRuleDefinition f
@@ -520,25 +524,25 @@ getModIfaceRule = define $ \GetModIface f -> do
         -- Bang patterns are important to force the inner fields
         Just $! HiFileResult (tmrModSummary tmr) (hm_iface $ tmrModInfo tmr)
 
-isFileOfInterestRule :: Rules ()
-isFileOfInterestRule = defineEarlyCutoff $ \IsFileOfInterest f -> do
-    filesOfInterest <- getFilesOfInterest
-    let res = f `elem` filesOfInterest
-    return (Just (if res then "1" else ""), ([], Just res))
+isFileOfInterestRule :: _ => WRule
+isFileOfInterestRule = undefined --defineEarlyCutoff IsFileOfInterest $ \f -> do
+--    filesOfInterest <- undefined --getFilesOfInterest TODO with dynamic
+    --let res = f `elem` filesOfInterest
+    --return (Just (if res then "1" else ""), ([], Just res))
 
 -- | A rule that wires per-file rules together
-mainRule :: Rules ()
-mainRule = do
-    getParsedModuleRule
-    getLocatedImportsRule
-    getDependencyInformationRule
-    reportImportCyclesRule
-    getDependenciesRule
-    typeCheckRule
-    getSpanInfoRule
-    generateCoreRule
-    generateByteCodeRule
-    loadGhcSession
-    getHiFileRule
-    getModIfaceRule
-    isFileOfInterestRule
+mainRule :: Rules
+mainRule =
+    [ getParsedModuleRule
+    , getLocatedImportsRule
+    , getDependencyInformationRule
+    , reportImportCyclesRule
+    , getDependenciesRule
+    , typeCheckRule
+    , getSpanInfoRule
+    , generateCoreRule
+    , generateByteCodeRule
+    , loadGhcSession
+    , getHiFileRule
+    , getModIfaceRule
+    , isFileOfInterestRule ]
