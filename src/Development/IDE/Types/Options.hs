@@ -24,7 +24,7 @@ data IdeOptions = IdeOptions
   { optPreprocessor :: GHC.ParsedSource -> IdePreprocessedSource
     -- ^ Preprocessor to run over all parsed source trees, generating a list of warnings
     --   and a list of errors, along with a new parse tree.
-  , optGhcSession :: ForallAction (FilePath -> ForallAction HscEnvEq)
+  , optGhcSession :: ForallDynamic (FilePath -> ForallAction HscEnvEq)
     -- ^ Setup a GHC session for a given file, e.g. @Foo.hs@.
     --   For the same 'ComponentOptions' from hie-bios, the resulting function will be applied once per file.
     --   It is desirable that many files get the same 'HscEnvEq', so that more IDE features work.
@@ -70,7 +70,7 @@ clientSupportsProgress :: LSP.ClientCapabilities -> IdeReportProgress
 clientSupportsProgress caps = IdeReportProgress $ Just True ==
     (LSP._workDoneProgress =<< LSP._window (caps :: LSP.ClientCapabilities))
 
-defaultIdeOptions :: ForallAction (FilePath -> ForallAction HscEnvEq) -> IdeOptions
+defaultIdeOptions :: ForallDynamic (FilePath -> ForallAction HscEnvEq) -> IdeOptions
 defaultIdeOptions session = IdeOptions
     {optPreprocessor = IdePreprocessedSource [] []
     ,optGhcSession = session

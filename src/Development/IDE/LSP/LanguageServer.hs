@@ -133,6 +133,8 @@ runLanguageServer options userHandlers onInitialConfig onConfigChange hs init_ca
         handleInit :: IO () -> (LspId -> IO ()) -> (LspId -> IO ()) -> Chan (Message config) -> LSP.LspFuncs config -> IO (Maybe err)
         handleInit exitClientMsg clearReqId waitForCancel clientMsgChan lspFuncs@LSP.LspFuncs{..} = do
 
+            -- Feed this information into the reflex network
+            init_callback (makeLSPVFSHandle lspFuncs, clientCapabilities, getNextReqId, sendFunc)
 
             _ <- flip forkFinally (const exitClientMsg) $ forever $ do
                 msg <- readChan clientMsgChan
@@ -173,17 +175,6 @@ runLanguageServer options userHandlers onInitialConfig onConfigChange hs init_ca
                 ) $ \(e :: SomeException) -> do
                     sendFunc $ wrap $ ResponseMessage "2.0" (responseId _id) Nothing $
                         Just $ ResponseError InternalError (T.pack $ show e) Nothing
-
-initializeRequestHandler :: PartialHandlers config
-initializeRequestHandler = PartialHandlers $ \WithMessage{..} x -> return x{
-    LSP.initializeRequestHandler = withInitialize initHandler
-    }
-
-initHandler
-    :: LSP.LspFuncs c
-    -> InitializeParams
-    -> IO ()
-initHandler _ params = registerIdeConfiguration undefined (parseConfiguration params)
 
 -- | Things that get sent to us, but we don't deal with.
 --   Set them to avoid a warning in VS Code output.

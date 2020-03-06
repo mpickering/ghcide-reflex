@@ -11,13 +11,20 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 module Development.IDE.Core.Reflex(module Development.IDE.Core.Reflex, HostFrame) where
 
+import Control.Monad.Fix
+import Data.Functor.Barbie
+import Data.Functor.Product
 import Language.Haskell.LSP.Core
 import Data.Kind
 import Reflex.Host.Class
 import qualified Data.ByteString.Char8 as BS
 import Development.IDE.Core.RuleTypes
+import Control.Monad.Extra
 import Control.Monad.Reader
 import Data.GADT.Show
 import Data.GADT.Compare.TH
@@ -84,45 +91,32 @@ import Development.IDE.Core.Debouncer
 data IdeState = IdeState
 
 data Priority = Priority Int
-setPriority = undefined
+setPriority a = return a
 
 type IdeResult v = ([FileDiagnostic], Maybe v)
 data HoverMap = HoverMap
 type Diagnostics = String
 type RMap t a = M.Map NormalizedFilePath (Dynamic t a)
 
-{-
-data State t = State { input :: Event t FilePath -- ^ Files which are being modified
-                     , fileInputs :: Dynamic t [FilePath] -- List of current files of interest
-                     , diags :: RMap t [Diagnostics] -- ^ The current diagnostics for each path
-                     , hover :: RMap t HoverMap -- ^ The current hover map for each path.
-                     , parsedModules :: Dynami(HostFrame
-                     , dependencyInformation :: RMap t ()
-                     , typecheckedModules :: RMap t TypecheckedModule
-                     }
-                     -}
-
-
-
 
 
 
 newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Maybe a) }
 
+-- All the stuff in here is state which depends on the specific module
 data ModuleState t = ModuleState { rules :: DMap RuleType (MDynamic t) }
 
-{-
-data ModuleState t = ModuleState { fileChanged :: Event t NormalizedFilePath
-                               , getParsedModule :: Dynamic t (Maybe ParsedModule)
-                               , getLocatedImports :: Dynamic t (Maybe LocatedImports)
-                               , getSpanInfo :: Dynamic t (Maybe SpansInfo)
-                               , getDependencyInformation :: Dynamic t (Maybe DependencyInformation)
-                               , getDependencies :: Dynamic t (Maybe TransitiveDependencies)
-                               , getTypecheckedModule :: Dynamic t (Maybe TcModuleResult)
-                               }
-                               -}
 
-data GlobalEnv t = GlobalEnv { globalEnv :: D.DMap GlobalType (Dynamic t) }
+data GlobalEnv t = GlobalEnv { globalEnv :: D.DMap GlobalType (Dynamic t)
+                             -- The global state of the application, stuff
+                             -- which doesn't depend on the current file.
+                             , handlers  :: GlobalHandlers t
+                             -- These events fire when the server recieves a message
+                             , init_e    :: Event t InitParams
+                             -- This event fires when the server is
+                             -- initialised
+                             }
+
 
 type ModuleMap t = (Dynamic t (M.Map NormalizedFilePath (ModuleState t)))
 
@@ -174,6 +168,10 @@ type CAction t m a = NormalizedFilePath -> ActionM t m (Maybe BS.ByteString, Ide
 
 type ActionM t m a = (ReaderT (REnv t) (MaybeT (EventWriterT t () m)) a)
 
+type DynamicM t m a = (ReaderT (REnv t) m (Dynamic t a))
+
+type BasicM t m a = (ReaderT (REnv t) m a)
+
 liftActionM :: Monad m => m a -> ActionM t m a
 liftActionM = lift . lift . lift
 
@@ -191,29 +189,75 @@ data REnv t = REnv { global :: GlobalEnv t
 data ForallAction a where
   ForallAction :: (forall t . C t => ActionM t (HostFrame t) a) -> ForallAction a
 
+data ForallDynamic a where
+  ForallDynamic :: (forall t . C t => DynamicM t (BasicGuestWrapper t) a) -> ForallDynamic a
+
+data ForallBasic a where
+  ForallBasic :: (forall t . C t => BasicM t (BasicGuestWrapper t) a) -> ForallBasic a
+
 newtype WrappedAction m t a =
           WrappedAction { getAction :: Action t m a }
 
 newtype WrappedActionM m t a =
           WrappedActionM { getActionM :: ActionM t m a }
 
+newtype WrappedDynamicM m t a =
+          WrappedDynamicM { getDynamicM :: DynamicM t m a }
+
 type Definition rt f t  = D.DSum rt (f t)
 
+newtype BasicGuestWrapper t a =
+          BasicGuestWrapper { unwrapBG :: (forall m . BasicGuestConstraints t m => BasicGuest t m a) }
+
+instance Monad (BasicGuestWrapper t) where
+  return x = BasicGuestWrapper (return x)
+  (BasicGuestWrapper a) >>= f = BasicGuestWrapper (a >>= unwrapBG . f)
+
+instance Applicative (BasicGuestWrapper t) where
+  pure x = BasicGuestWrapper (pure x)
+  (BasicGuestWrapper a) <*> (BasicGuestWrapper b) = BasicGuestWrapper (a <*> b)
+
+instance Functor (BasicGuestWrapper t) where
+  fmap f (BasicGuestWrapper a) = BasicGuestWrapper (fmap f a)
+
+instance MonadHold t (BasicGuestWrapper t) where
+  buildDynamic a e = BasicGuestWrapper (buildDynamic a e)
+  headE e = BasicGuestWrapper (headE e)
+  hold a e = BasicGuestWrapper (hold a e)
+  holdDyn a e = BasicGuestWrapper (holdDyn a e)
+  holdIncremental a e = BasicGuestWrapper (holdIncremental a e)
+
+instance MonadSample t (BasicGuestWrapper t) where
+  sample b = BasicGuestWrapper (sample b)
+
+instance MonadFix (BasicGuestWrapper t) where
+  mfix f = BasicGuestWrapper (mfix (unwrapBG . f))
+
+instance MonadIO (BasicGuestWrapper t) where
+  liftIO m = BasicGuestWrapper (liftIO m)
+
+
+
+-- Per module rules are only allowed to sample dynamics, so can be
+-- triggered by external events but the external events also trigger
+-- some global state to be updated.
 type ShakeDefinition m t = Definition RuleType (WrappedAction m) t
 
-type GlobalDefinition m t = Definition GlobalType (WrappedActionM m) t
+-- Global definitions build dynamics directly as they need to populate
+-- the global state
+type GlobalDefinition m t = Definition GlobalType (WrappedDynamicM m) t
 
-data Rule m t = ModRule (ShakeDefinition m t) | GlobalRule (GlobalDefinition m t)
+data Rule t = ModRule (ShakeDefinition (HostFrame t) t) | GlobalRule (GlobalDefinition (BasicGuestWrapper t) t)
 
 type C t = (Monad (HostFrame t), MonadIO (HostFrame t), Ref (HostFrame t) ~ Ref IO
            , MonadRef (HostFrame t), Reflex t, MonadSample t (HostFrame t))
 
 data WRule where
-  WRule :: (forall t . C t => Rule (HostFrame t) t) -> WRule
+  WRule :: (forall t . C t => Rule t) -> WRule
 
 type Rules = [WRule]
 
-partitionRules :: C t => Rules -> ([ShakeDefinition (HostFrame t) t], [GlobalDefinition (HostFrame t) t])
+partitionRules :: C t => Rules -> ([ShakeDefinition (HostFrame t) t], [GlobalDefinition (BasicGuestWrapper t) t])
 partitionRules [] = ([], [])
 partitionRules (WRule (ModRule r) : xs) = let (rs, gs) = partitionRules xs in  (r:rs, gs)
 partitionRules (WRule (GlobalRule g) : xs) = let (rs, gs) = partitionRules xs in  (rs, g:gs)
@@ -221,13 +265,14 @@ partitionRules (WRule (GlobalRule g) : xs) = let (rs, gs) = partitionRules xs in
 define :: RuleType a -> (forall t . C t => Action t (HostFrame t) a) -> WRule
 define rn a = WRule (ModRule (rn :=> WrappedAction a))
 
+-- TODO: Doesn't implement early cutoff, need to generalise ModRule
 defineEarlyCutoff :: RuleType a -> (forall t . C t => CAction t (HostFrame t) a) -> WRule
-defineEarlyCutoff rn a = undefined
+defineEarlyCutoff rn a = WRule (ModRule (rn :=> WrappedAction (fmap (fmap snd) a)))
 
 -- Like define but doesn't depend on the filepath, usually depends on the
 -- global input events somehow
-addIdeGlobal :: GlobalType a -> (forall t . ActionM t (HostFrame t) a) -> WRule
-addIdeGlobal gn a = WRule (GlobalRule (gn :=> WrappedActionM a))
+addIdeGlobal :: GlobalType a -> (forall t . C t => DynamicM t (BasicGuestWrapper t) a) -> WRule
+addIdeGlobal gn a = WRule (GlobalRule (gn :=> WrappedDynamicM a))
 
 mkModule :: forall t m . (MonadIO m, PerformEvent t m, TriggerEvent t m, Monad m, Reflex t, MonadFix m, _) =>
                  GlobalEnv t
@@ -258,8 +303,9 @@ mkModule genv rules_raw mm f = runDynamicWriterT $ do
         tellDyn pm_diags
         let ident = show f ++ ": " ++ gshow name
         res' <- improvingMaybe res
---        return (traceDynE ("D:" ++ ident) res')
-        return (name :=> MDynamic res)
+        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) res'))
+--        return (name :=> MDynamic res')
+
 
     renv = REnv genv mm
 
@@ -310,51 +356,67 @@ loadSession dir v = do
     cradleToSession c
     -}
 
+instance TraversableB HandlersG where
+instance ApplicativeB HandlersG where
+instance FunctorB HandlersG where
+
+type GlobalHandlers t = HandlersG (Event t)
+
+-- Make the handlers and events which fire when a handler fires
+mkHandlers :: forall m t . _ => m (Handlers, GlobalHandlers t)
+mkHandlers = do
+  res <- btraverse go h
+  return $ bunzip res
+  where
+    h :: Handlers
+    h = def
+
+    go :: f a -> m ((MHandler `Product` (Event t)) a)
+    go _ = do
+      (input, trig) <- newTriggerEvent
+      return (Pair (MJust trig) (input))
+
 reflexOpen :: Logger
            -> Debouncer LSP.NormalizedUri
            -> IdeOptions
            -> (Handlers ->
-                ((VFSHandle, LSP.ClientCapabilities, IO LSP.LspId, (LSP.FromServerMessage -> IO ())) -> IO ()) -> IO ())
+                ((VFSHandle, LSP.ClientCapabilities, IO LSP.LspId, (LSP.FromServerMessage -> IO ())) -> IO ())
+              -> (NormalizedFilePath -> IO ())
+              -> ForallBasic ())
            -> Rules
            -> IO ()
 reflexOpen logger debouncer opts startServer init_rules = do
 --  session <- loadSession "/home/matt/reflex-ghc/ghcide/" "/home/matt/reflex-ghc/ghcide/hie.yaml"
 --  setCurrentDirectory "/home/matt/reflex-ghc/ghcide"
---
+
 
   basicHostWithQuit $ mdo
     let (mod_rules, global_rules) = partitionRules init_rules
     pb <- getPostBuild
     (input, input_trigger) <- newTriggerEvent
+    (sample, sample_trigger) <- newTriggerEvent
 
-    fileInputs <- holdDyn [] never
---    opts :: Dynamic t IdeOptions
-    --opts <- holdDyn  never
-
---    env :: Dynamic t HscEnv
-    --env <- holdDyn session never
-
-    -- TODO: Deduplicate
-    {-
-    let rule :: forall t m . Event t () -> GlobalDefinition (Performable m) t -> m (DSum GlobalType (Dynamic t))
-        rule trigger (name :=> (WrappedActionM act)) = mdo
-          let wrap = fromMaybe ([], Nothing)
+    -- TODO: Deduplicate, global rules need to be MDynamic as well?
+    -- Doesn't typecheck if you have the signature (haha)
+    let --rule :: Event t () -> GlobalDefinition (Performable m) t -> m (DSum GlobalType (Dynamic t))
+        rule trigger (name :=> (WrappedDynamicM act)) = mdo
+          {-
           act_trig <- switchHoldPromptly trigger (fmap (\e -> leftmost [trigger, e]) deps)
           pm <- performEvent (traceAction ident (runEventWriterT (runMaybeT (flip runReaderT renv act))) <$! act_trig)
-          let (act_res, deps) = splitE pm
-          d <- holdDyn act_res
-          let (pm_diags, res) = splitDynPure d
-          tellDyn pm_diags
-          let ident = gshow name
-          res' <- improvingMaybe res
+          -}
+          d <- unwrapBG (flip runReaderT renv act)
+          --let (act_res, deps) = splitE pm
+          --d <- holdDyn Nothing act_res
+          --d' <- improvingMaybe d
+          --let ident = gshow name
 --        return (traceDynE ("D:" ++ ident) res')
-          return (name :=> res)
+          return (name :=> d)
 
     let renv = REnv genv mmap
 
     genv_rules <- mapM (rule pb) global_rules
-    -}
-    let genv = GlobalEnv undefined
+
+    let genv = GlobalEnv (D.fromList genv_rules) hs_es init
 
 
 
@@ -368,8 +430,11 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
     performEvent_ $ liftIO . print <$> input
 
-    let hs = undefined
-    liftIO $ startServer hs undefined
+    (init, init_trigger) <- newTriggerEvent
+    (hs, hs_es) <- mkHandlers
+
+    let ForallBasic start = startServer hs init_trigger input_trigger
+    unwrapBG $ flip runReaderT renv start
 
     liftIO $ forkIO $ do
       input_trigger (toNormalizedFilePath "src/Development/IDE/Core/Rules.hs")
@@ -521,11 +586,38 @@ use sel fp = do
       liftIO $ updateMap m [fp]
       return Nothing
 
+useNoTrack :: _ =>  RuleType a -> NormalizedFilePath -> BasicM t m (Maybe a)
+useNoTrack sel fp = noTrack (use_ sel fp)
+
+
+noTrack :: _ => ActionM t m a -> BasicM t m (Maybe a)
+noTrack act = ReaderT $ (\renv -> do
+                      let x = fst <$> runEventWriterT (runMaybeT (runReaderT act renv))
+                      x)
+
 useNoFile_ :: _ => GlobalType a
+           -> ActionM t m a
+useNoFile_ sel = useNoFile sel
+
+useNoFile :: _ => GlobalType a
           -> ActionM t m a
-useNoFile_ sel = do
+
+useNoFile sel = do
   m <- globalEnv <$> askGlobal
-  liftActionM $ sample (current $ D.findWithDefault (error "MISSING RULE") sel m)
+  liftActionM $ sample (current $ D.findWithDefault (error $ "MISSING RULE:" ++ gshow sel) sel m)
+
+getHandlerEvent sel = do
+  sel . handlers <$> askGlobal
+
+getInitEvent = do
+  init_e <$> askGlobal
+
+withNotification :: _ => Event t (LSP.NotificationMessage m a) -> Event t a
+withNotification = fmap (\(LSP.NotificationMessage _ _ a) -> a)
+
+whenUriFile :: Uri -> r -> (NormalizedFilePath -> r) ->  r
+whenUriFile uri def act = maybe def (act . toNormalizedFilePath) (LSP.uriToFilePath uri)
+
 
 
 (<$!) v fa = fmap (\a -> a `seq` v) fa

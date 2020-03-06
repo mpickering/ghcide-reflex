@@ -9,6 +9,7 @@ module Development.IDE.Core.FileExists
 
 where
 
+import           Data.Foldable                    as F
 import           Control.Concurrent.Extra
 import           Control.Exception
 import           Control.Monad.Extra
@@ -30,6 +31,8 @@ import           Language.Haskell.LSP.Types.Capabilities
 import qualified System.Directory as Dir
 import Control.Monad.IO.Class
 import Development.IDE.Core.RuleTypes
+import Language.Haskell.LSP.Core
+import Reflex (foldDyn)
 
 
 -- | A wrapper around a mutable 'FileExistsMap'
@@ -70,25 +73,44 @@ modifyFileExists state changes = do
 --     2. The editor creates a new buffer @B.hs@
 --        Unless the editor also sends a @DidChangeWatchedFile@ event, ghcide will not pick it up
 --        Most editors, e.g. VSCode, only send the event when the file is saved to disk.
-getFileExists :: NormalizedFilePath -> ActionM t m Bool
-getFileExists fp = undefined -- TODO
+getFileExists :: _ => NormalizedFilePath -> ActionM t m Bool
+getFileExists fp = do
+  (v, c, f, _) <- useNoFile GetInitFuncs
+  getFileExistsImpl f c v fp
+
 
 
 -- | Installs the 'getFileExists' rules.
 --   Provides a fast implementation if client supports dynamic watched files.
 --   Creates a global state as a side effect in that case.
-fileExistsRules :: IO LspId -> ClientCapabilities -> VFSHandle -> Rules
-fileExistsRules getLspId ClientCapabilities{_workspace} vfs
+getFileExistsImpl :: _ => IO LspId -> ClientCapabilities -> VFSHandle -> NormalizedFilePath -> ActionM t m Bool
+getFileExistsImpl getLspId ClientCapabilities{_workspace} vfs nfp
   | Just WorkspaceClientCapabilities{_didChangeWatchedFiles} <- _workspace
   , Just DidChangeWatchedFilesClientCapabilities{_dynamicRegistration} <- _didChangeWatchedFiles
   , Just True <- _dynamicRegistration
-  = [] -- fileExistsRulesFast getLspId -- Should have an add global
-  | otherwise = []
+  = fileExistsRulesFast getLspId vfs nfp
+  | otherwise = fileExistsSlow nfp
+
+fileExistsRules :: Rules
+fileExistsRules = [fileExistsVar]
+
+fileExistsVar :: _ => WRule
+fileExistsVar = addIdeGlobal FileExistsMapVar $ do
+  ce <- withNotification <$> getHandlerEvent didChangeWatchedFilesNotificationHandler
+  foldDyn HashMap.union HashMap.empty (go <$> ce)
+  where
+    go (DidChangeWatchedFilesParams fileEvents) = HashMap.fromList $
+                    mapMaybe
+                        (\(FileEvent uri ev) ->
+                            (, ev /= FcDeleted) . toNormalizedFilePath
+                            <$> uriToFilePath uri
+                        )
+                        ( (F.toList fileEvents) )
 
 --   Requires an lsp client that provides WatchedFiles notifications.
 fileExistsRulesFast :: _ => IO LspId -> VFSHandle -> NormalizedFilePath -> ActionM t m Bool
 fileExistsRulesFast getLspId vfs file = do
-  isWf <- undefined --isWorkspaceFile file
+  isWf <- isWorkspaceFile file
   if isWf then fileExistsFast getLspId vfs file else fileExistsSlow file
 
 fileExistsFast :: _ => IO LspId -> VFSHandle -> NormalizedFilePath -> ActionM t m Bool

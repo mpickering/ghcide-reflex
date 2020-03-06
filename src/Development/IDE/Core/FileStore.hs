@@ -9,7 +9,7 @@ module Development.IDE.Core.FileStore(
     getFileContents,
     getVirtualFile,
 --    setBufferModified,
-    setSomethingModified,
+    --setSomethingModified,
     getModificationTime,
     fileStoreRules,
     VFSHandle,
@@ -49,6 +49,7 @@ import qualified System.Posix.Error as Posix
 
 import Language.Haskell.LSP.Core
 import Language.Haskell.LSP.VFS
+import Reflex
 
 
 makeVFSHandle :: IO VFSHandle
@@ -119,10 +120,11 @@ getModificationTime vfs file = do
 foreign import ccall "getmodtime" c_getModTime :: CString -> Ptr CTime -> Ptr CLong -> IO Int
 #endif
 
-getFileContentsRule :: VFSHandle -> WRule
-getFileContentsRule vfs =
+getFileContentsRule :: WRule
+getFileContentsRule =
     defineEarlyCutoff GetFileContents $ \file -> do
         -- need to depend on modification time to introduce a dependency with Cutoff
+        vfs <- useNoFile GetVFSHandle
         (h, (diags, mtime)) <- getModificationTime vfs file
         case mtime of
           Nothing -> return (h, (diags, Nothing))
@@ -144,11 +146,16 @@ ideTryIOException fp act =
 getFileContents :: _ => NormalizedFilePath -> ActionM t m (FileVersion, Maybe T.Text)
 getFileContents = use_ GetFileContents
 
-fileStoreRules :: VFSHandle -> Rules
-fileStoreRules vfs = do
-    --addIdeGlobal vfs
+fileStoreRules :: Rules
+fileStoreRules =
+    [ vfsGlobal
+    , getFileContentsRule ]
     --getModificationTimeRule vfs
-    [getFileContentsRule vfs]
+
+vfsGlobal =
+  (addIdeGlobal GetVFSHandle $ do
+        e <- fmap (\(v, _,_,_) -> v) <$> getInitEvent
+        holdDyn undefined e)
 
 -- | Notify the compiler service that a particular file has been modified.
 --   Use 'Nothing' to say the file is no longer in the virtual file system
@@ -166,8 +173,8 @@ setBufferModified state absFile contents = do
 -- | Note that some buffer somewhere has been modified, but don't say what.
 --   Only valid if the virtual file system was initialised by LSP, as that
 --   independently tracks which files are modified.
-setSomethingModified :: IdeState -> IO ()
-setSomethingModified state = undefined
+--setSomethingModified :: IdeState -> IO ()
+--setSomethingModified state = undefined
 {-
     VFSHandle{..} <- getIdeGlobalState state
     when (isJust setVirtualFileContents) $

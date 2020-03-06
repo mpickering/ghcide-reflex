@@ -29,8 +29,6 @@ import qualified Data.Text                        as Text
 import           Development.IDE.Core.OfInterest
 
 {-
-whenUriFile :: Uri -> (NormalizedFilePath -> IO ()) -> IO ()
-whenUriFile uri act = whenJust (LSP.uriToFilePath uri) $ act . toNormalizedFilePath
 
 setHandlersNotifications :: PartialHandlers c
 setHandlersNotifications = PartialHandlers $ \WithMessage{..} x -> return x

@@ -38,6 +38,9 @@ import qualified Language.Haskell.LSP.Types.Capabilities as LSP
 import           Development.IDE.Core.Reflex
 import           Development.IDE.Core.RuleTypes
 import Language.Haskell.LSP.Core
+import Development.IDE.Types.Location
+import Reflex
+import Control.Monad.Trans
 
 
 
@@ -52,8 +55,9 @@ initialise :: Rules
            -> Debouncer LSP.NormalizedUri
            -> IdeOptions
            -> (Handlers ->
-               ((VFSHandle, LSP.ClientCapabilities, IO LSP.LspId, (LSP.FromServerMessage -> IO ())) -> IO ()) ->
-                IO () )
+               ((VFSHandle, LSP.ClientCapabilities, IO LSP.LspId, (LSP.FromServerMessage -> IO ())) -> IO ())
+               -> (NormalizedFilePath -> IO ())
+               -> ForallBasic () )
            -> IO () -- IdeState
 initialise mainRule logger debouncer options start =
     reflexOpen
@@ -61,8 +65,11 @@ initialise mainRule logger debouncer options start =
         debouncer
         options
         start
-        (addIdeGlobal GetIdeOptions undefined --GlobalIdeOptions options
-            : (fileStoreRules undefined
+        (addIdeGlobal GetIdeOptions (return $ constDyn options)
+            : addIdeGlobal GhcSessionIO (do let (ForallDynamic m') = optGhcSession options
+                                            m <- m'
+                                            return (GhcSessionFun <$> m))
+            : (fileStoreRules
             ++ ofInterestRules -- In a global dynamic
 --            ++ fileExistsRules getLspId caps vfs
             ++ mainRule))

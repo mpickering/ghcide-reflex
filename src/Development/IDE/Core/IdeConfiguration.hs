@@ -1,40 +1,47 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 module Development.IDE.Core.IdeConfiguration
   ( IdeConfiguration(..)
-  , registerIdeConfiguration
   , parseConfiguration
   , parseWorkspaceFolder
   , isWorkspaceFile
-  , modifyWorkspaceFolders
   )
 where
 
 import           Control.Concurrent.Extra
 import           Control.Monad
 import           Data.HashSet                   (HashSet, singleton)
+import qualified Data.HashSet as S
 import           Data.Text                      (Text, isPrefixOf)
-import           Development.IDE.Core.Shake
+import           Development.IDE.Core.Reflex hiding (singleton)
+import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Types.Location
-import           Development.Shake
 import           Language.Haskell.LSP.Types
+import           Language.Haskell.LSP.Core
+import Reflex
+import Control.Monad.Trans
 
--- | Lsp client relevant configuration details
-data IdeConfiguration = IdeConfiguration
-  { workspaceFolders :: HashSet NormalizedUri
-  }
-  deriving (Show)
+ideConfigurationRule :: _ => WRule
+ideConfigurationRule = addIdeGlobal IdeConfigurationVar $ do
+  e <- getHandlerEvent didChangeWorkspaceFoldersNotificationHandler
+  lift $ foldDyn (\i e -> modifyIdeConfig (go i) e) (IdeConfiguration S.empty) e
+  where
+    modifyIdeConfig f (IdeConfiguration w) = (IdeConfiguration (f w))
+    add       = S.union
+    substract = flip S.difference
+    go (NotificationMessage _ _ (DidChangeWorkspaceFoldersParams events)) =
+          add       (foldMap (S.singleton . parseWorkspaceFolder) (_added   events))
+            . substract (foldMap (S.singleton . parseWorkspaceFolder) (_removed events))
+  {-
+  withNotification (LSP.didChangeWorkspaceFoldersNotificationHandler x) $
+        \_ ide (DidChangeWorkspaceFoldersParams events) -> do
+            modifyWorkspaceFolders ide
+              -}
 
-newtype IdeConfigurationVar = IdeConfigurationVar {unIdeConfigurationRef :: Var IdeConfiguration}
-
-instance IsIdeGlobal IdeConfigurationVar
-
-registerIdeConfiguration :: ShakeExtras -> IdeConfiguration -> IO ()
-registerIdeConfiguration extras =
-  addIdeGlobalExtras extras . IdeConfigurationVar <=< newVar
-
-getIdeConfiguration :: Action IdeConfiguration
+getIdeConfiguration :: _ => ActionM t m IdeConfiguration
 getIdeConfiguration =
-  getIdeGlobalAction >>= liftIO . readVar . unIdeConfigurationRef
+  useNoFile_ IdeConfigurationVar
+--  getIdeGlobalAction >>= liftIO . readVar . unIdeConfigurationRef
 
 parseConfiguration :: InitializeParams -> IdeConfiguration
 parseConfiguration InitializeParams {..} =
@@ -50,14 +57,16 @@ parseWorkspaceFolder :: WorkspaceFolder -> NormalizedUri
 parseWorkspaceFolder =
   toNormalizedUri . Uri . (_uri :: WorkspaceFolder -> Text)
 
+{-
 modifyWorkspaceFolders
   :: IdeState -> (HashSet NormalizedUri -> HashSet NormalizedUri) -> IO ()
 modifyWorkspaceFolders ide f = do
   IdeConfigurationVar var <- getIdeGlobalState ide
   IdeConfiguration    ws  <- readVar var
   writeVar var (IdeConfiguration (f ws))
+  -}
 
-isWorkspaceFile :: NormalizedFilePath -> Action Bool
+isWorkspaceFile :: _ => NormalizedFilePath -> ActionM t m Bool
 isWorkspaceFile file = do
   IdeConfiguration {..} <- getIdeConfiguration
   let toText = getUri . fromNormalizedUri

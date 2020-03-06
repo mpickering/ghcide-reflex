@@ -6,6 +6,7 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE PatternSynonyms       #-}
 {-# LANGUAGE PartialTypeSignatures       #-}
+{-# LANGUAGE FlexibleContexts       #-}
 
 -- | A Shake implementation of the compiler service, built
 --   using the "Shaker" abstraction layer for in-memory use.
@@ -29,6 +30,7 @@ module Development.IDE.Core.Rules(
 import Fingerprint
 
 import Development.IDE.Core.FileStore
+import Reflex (holdDyn)
 import Data.Binary
 import Data.Bifunctor (second)
 import Control.Monad.Extra
@@ -107,16 +109,16 @@ getDependencies :: _ => NormalizedFilePath -> ActionM t m (Maybe [NormalizedFile
 getDependencies file = fmap transitiveModuleDeps <$> use GetDependencies file
 
 -- | Try to get hover text for the name under point.
-getAtPoint :: _ => NormalizedFilePath -> Position -> ActionM t m (Maybe (Maybe Range, [T.Text]))
+getAtPoint :: _ => NormalizedFilePath -> Position -> BasicM t m (Maybe (Maybe Range, [T.Text]))
 getAtPoint file pos = fmap join $ runMaybeT $ do
-  opts <- lift getIdeOptions
-  spans <- MaybeT $ use GetSpanInfo file
+  opts <-  MaybeT $ (noTrack getIdeOptions)
+  spans <- MaybeT $ useNoTrack GetSpanInfo file
   return $ AtPoint.atPoint opts spans pos
 
 -- | Goto Definition.
-getDefinition :: _ => NormalizedFilePath -> Position -> ActionM  t m (Maybe Location)
-getDefinition file pos = fmap join $ runMaybeT $ do
-    opts <- lift getIdeOptions
+getDefinition :: _ => NormalizedFilePath -> Position -> BasicM  t m (Maybe Location)
+getDefinition file pos = fmap join $ noTrack $ fmap join $ runMaybeT $ do
+    opts <- lift $ getIdeOptions
     spans <- MaybeT $ use GetSpanInfo file
     lift $ AtPoint.gotoDefinition (getHieFile file) opts (spansExprs spans) pos
 
@@ -438,9 +440,6 @@ generateByteCodeRule =
 
 loadGhcSession :: _ => WRule
 loadGhcSession = do
-    --defineNoFile $ \GhcSessionIO -> do
-    --    opts <- getIdeOptions
-    --    GhcSessionFun <$> optGhcSession opts
     defineEarlyCutoff GhcSession $ \file -> do
         GhcSessionFun fun <- useNoFile_ GhcSessionIO
         let ForallAction val = fun $ fromNormalizedFilePath file
@@ -501,7 +500,7 @@ mkInterfaceFilesGenerationDiag f intro = mkDiag $ intro <> msg
 
 getModIfaceRule :: _ => WRule
 getModIfaceRule = define GetModIface $ \f -> do
-    fileOfInterest <- use_ IsFileOfInterest f
+    fileOfInterest <- isFileOfInterest f
     let useHiFile =
           -- Never load interface files for files of interest
           not fileOfInterest
@@ -524,11 +523,19 @@ getModIfaceRule = define GetModIface $ \f -> do
         -- Bang patterns are important to force the inner fields
         Just $! HiFileResult (tmrModSummary tmr) (hm_iface $ tmrModInfo tmr)
 
+{-
 isFileOfInterestRule :: _ => WRule
 isFileOfInterestRule = undefined --defineEarlyCutoff IsFileOfInterest $ \f -> do
 --    filesOfInterest <- undefined --getFilesOfInterest TODO with dynamic
     --let res = f `elem` filesOfInterest
     --return (Just (if res then "1" else ""), ([], Just res))
+    -}
+initGlobal :: _ => WRule
+initGlobal =
+  addIdeGlobal GetInitFuncs $ do
+    e <- getInitEvent
+    holdDyn undefined e
+
 
 -- | A rule that wires per-file rules together
 mainRule :: Rules
@@ -545,4 +552,4 @@ mainRule =
     , loadGhcSession
     , getHiFileRule
     , getModIfaceRule
-    , isFileOfInterestRule ]
+    , initGlobal ]

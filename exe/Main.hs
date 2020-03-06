@@ -9,6 +9,7 @@
 
 module Main(main) where
 
+import Reflex
 import Arguments
 import Data.Binary (Binary)
 import Data.Dynamic (Typeable)
@@ -123,11 +124,11 @@ main = do
         hPutStrLn stderr "Starting LSP server..."
         hPutStrLn stderr "If you are seeing this in a terminal, you probably should have run ghcide WITHOUT the --lsp option!"
 
-        let options = defaultIdeOptions $ ForallAction (loadSession dir)
+        let options = defaultIdeOptions $ ForallDynamic (loadSession dir)
         debouncer <- newAsyncDebouncer
         initialise mainRule --(loadGhcSessionIO >> mainRule -- >> pluginRules plugins >> action kick)
             (logger minBound) debouncer options
-            (runLanguageServer def def onInitialConfiguration onConfigurationChange)
+            (\h i _ -> ForallBasic $ liftIO $ runLanguageServer def def onInitialConfiguration onConfigurationChange h i)
     else do
         putStrLn $ "Ghcide setup tester in " ++ dir ++ "."
         putStrLn "Report bugs at https://github.com/digital-asset/ghcide/issues"
@@ -163,24 +164,33 @@ main = do
                 Map.lookup cradle cradlesToSessions
 
         let options =
-              (defaultIdeOptions $ ForallAction (return $ \fp -> ForallAction (grab fp)))
+              (defaultIdeOptions $ ForallDynamic (return $ constDyn (\fp -> ForallAction (grab fp))))
                     { optShakeProfiling = argsShakeProfiling }
 
-        ide <- initialise (loadGhcSessionIO ++ mainRule) (logger Info) noopDebouncer options
-                           (\_ f -> f (vfs, def, (pure $ IdInt 0), (showEvent lock)))
+        initialise (loadGhcSessionIO ++ mainRule) (logger Info) noopDebouncer options
+                           (\_ f open -> ForallBasic $ do
+                liftIO $ f (vfs, def, (pure $ IdInt 0), (showEvent lock))
+                liftIO $ putStrLn "\nStep 6/6: Type checking the files"
+                --setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
+                results <- liftIO $ mapM_ (open . toNormalizedFilePath) files
+                res <- getAtPoint (toNormalizedFilePath "src/Development/IDE/Core/Rules.hs") (Position 121 24)
+                liftIO $ print res
+                liftIO $ print "waiting"
+                liftIO $ threadDelay 10000000
+                liftIO $ print "waited"
+                res <- getAtPoint (toNormalizedFilePath "src/Development/IDE/Core/Rules.hs") (Position 121 24)
+                liftIO $ print res
+                {-
+                let (worked, failed) = partition fst $ zip (map isJust results) files
+                when (failed /= []) $
+                  putStr $ unlines $ "Files that failed:" : map ((++) " * " . snd) failed
 
-        putStrLn "\nStep 6/6: Type checking the files"
-        --setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
-        -- Need to add a way to externally inspect nodes
-        results <- undefined -- uses GetTypecheckedModule $ map toNormalizedFilePath files
-        let (worked, failed) = partition fst $ zip (map isJust results) files
-        when (failed /= []) $
-            putStr $ unlines $ "Files that failed:" : map ((++) " * " . snd) failed
+                let files xs = let n = length xs in if n == 1 then "1 file" else show n ++ " files"
+                putStrLn $ "\nCompleted (" ++ files worked ++ " worked, " ++ files failed ++ " failed)"
+                -}
+                return ())
 
-        let files xs = let n = length xs in if n == 1 then "1 file" else show n ++ " files"
-        putStrLn $ "\nCompleted (" ++ files worked ++ " worked, " ++ files failed ++ " failed)"
-
-        unless (null failed) exitFailure
+                --unless (null failed) exitFailure)
 
 
 expandFiles :: [FilePath] -> IO [FilePath]
@@ -297,7 +307,7 @@ cradleToSession mbYaml cradle = do
     return (f (GetHscEnvArgs opts deps))
 
 
-loadSession :: _ => FilePath -> ActionM t m (FilePath -> ForallAction HscEnvEq)
+loadSession :: _ => FilePath -> DynamicM t m (FilePath -> ForallAction HscEnvEq)
 loadSession dir = liftIO $ do
     cradleLoc <- memoIO $ \v -> do
         res <- findCradle v
@@ -310,7 +320,7 @@ loadSession dir = liftIO $ do
         session file = do
           c <- liftIO $ maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle file
           cradleToSession file c
-    return $ \file -> ForallAction (session =<< liftIO (cradleLoc file))
+    return $ constDyn (\file -> ForallAction (session =<< liftIO (cradleLoc file)))
 
 
 -- | Memoize an IO function, with the characteristics:

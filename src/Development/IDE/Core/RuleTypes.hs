@@ -48,6 +48,10 @@ import Reflex.Host.Class
 import {-# SOURCE #-} Development.IDE.Core.Reflex
 import Control.Monad.IO.Class
 
+import qualified Language.Haskell.LSP.Messages as LSP
+import qualified Language.Haskell.LSP.Types as LSP
+import qualified Language.Haskell.LSP.Types.Capabilities as LSP
+
 type LocatedImports = ([(Located ModuleName, Maybe ArtifactsLocation)], S.Set InstalledUnitId)
 
 -- Per module rules
@@ -76,6 +80,16 @@ data GlobalType a where
   OfInterestVar :: GlobalType (HashSet NormalizedFilePath)
   FileExistsMapVar :: GlobalType FileExistsMap
   GetVFSHandle :: GlobalType VFSHandle
+  GetInitFuncs :: GlobalType InitParams
+  IdeConfigurationVar :: GlobalType IdeConfiguration
+
+type InitParams = (VFSHandle, LSP.ClientCapabilities, IO LSP.LspId, (LSP.FromServerMessage -> IO ()))
+
+-- | Lsp client relevant configuration details
+data IdeConfiguration = IdeConfiguration
+  { workspaceFolders :: HashSet NormalizedUri
+  }
+  deriving (Show)
 
 data GetHscEnvArgs = GetHscEnvArgs
     { hscenvOptions :: [String]        -- componentOptions from hie-bios
