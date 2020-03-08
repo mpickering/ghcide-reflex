@@ -100,9 +100,55 @@ type Diagnostics = String
 type RMap t a = M.Map NormalizedFilePath (Dynamic t a)
 
 
+-- Like a Maybe, but has to be activated the first time we try to access it
+data Thunk a = Value a | Awaiting | Seed (IO ())
+
+splitThunk :: a -> Thunk (a, Maybe b)  -> (a, Thunk b)
+splitThunk _ (Value (l, a)) = (l, maybe Awaiting Value a)
+splitThunk a (Awaiting)  = (a, Awaiting)
+splitThunk a (Seed trig) = (a, Seed trig)
+
+thunk :: _ => Event t (Maybe a) -> m (Dynamic t (Thunk a), Event t ())
+thunk e  = do
+  (start, grow) <- newTriggerEvent
+  start' <- batchOccurrences 0.01 start
+  let trig = print "growing" >> grow Awaiting
+  d <- holdDyn (Seed trig) (leftmost [maybe Awaiting Value <$> e
+                                                , Awaiting <$ start' ])
+  -- Only allow the thunk to improve
+  d' <- improvingResetableThunk d
+  return (d', () <$ start')
+
+forceThunk :: _ => Dynamic t (Thunk a) -> m ()
+forceThunk d = do
+  t <- sample (current d)
+  case t of
+    Seed start -> liftIO start
+    _ -> return ()
+
+sampleThunk :: _ => Dynamic t (Thunk a) -> m (Maybe a)
+sampleThunk d = do
+  t <- sample (current d)
+  case t of
+    Seed start -> liftIO start >> return Nothing
+    Awaiting   -> return Nothing
+    Value a    -> return (Just a)
 
 
-newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Maybe a) }
+-- Like improvingMaybe, but for the Thunk type
+improvingResetableThunk  :: _ => Dynamic t (Thunk a) -> m (Dynamic t (Thunk a))
+improvingResetableThunk = scanDynMaybe id upd
+  where
+    -- ok, if you insist, write the new value
+    upd (Value a) _ = Just (Value a)
+    -- Wait, once the trigger is pressed
+    upd Awaiting  (Seed {}) = Just Awaiting
+    -- Allows the thunk to be reset to GC
+--    upd s@(Seed {}) _ = Just s
+    -- NOPE
+    upd _ _ = Nothing
+
+newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Thunk a) }
 
 -- All the stuff in here is state which depends on the specific module
 data ModuleState t = ModuleState { rules :: DMap RuleType (MDynamic t) }
@@ -130,7 +176,7 @@ type ModuleMap t = (Dynamic t (M.Map NormalizedFilePath (ModuleState t)))
 data ModuleMapWithUpdater t =
   MMU {
     getMap :: ModuleMap t
-    , updateMap :: [NormalizedFilePath] -> IO ()
+    , updateMap :: [(D.Some RuleType, NormalizedFilePath)] -> IO ()
     }
 
 currentMap = current . getMap
@@ -160,9 +206,10 @@ mkModuleMap genv  rules_raw input = mdo
   (map_update, update_trigger) <- newTriggerEvent
   map_update' <- fmap concat <$> batchOccurrences 0.01 map_update
   let mk_patch ((fp, v), _) = v
-      mkM fp = (fp, Just (mkModule genv rules_raw mmu fp))
+      mkM (sel, fp) = (fp, Just (mkModule genv rules_raw mmu sel fp))
       mk_module fp act _ = mk_patch <$> act
-      inp = M.fromList . map mkM <$> mergeWith (++) [(singleton <$> input), map_update']
+      sing fp = [(D.Some GetTypecheckedModule, fp)]
+      inp = M.fromList . map mkM <$> mergeWith (++) [(sing <$> input), map_update']
 --  let input_event = (fmap mk_patch . mkModule o e mod_map <$> input)
 
   mod_map <- listWithKeyShallowDiff M.empty inp mk_module  --(mergeWith (<>) [input_event, map_update])
@@ -285,36 +332,41 @@ mkModule :: forall t m . (MonadIO m, PerformEvent t m, TriggerEvent t m, Monad m
                  GlobalEnv t
               -> [ShakeDefinition (Performable m) t]
               -> ModuleMapWithUpdater t
+              -> D.Some RuleType
               -> NormalizedFilePath
               -> m ((NormalizedFilePath, ModuleState t), Dynamic t [FileDiagnostic])
-mkModule genv rules_raw mm f = runDynamicWriterT $ do
+mkModule genv rules_raw mm (D.Some sel) f = runDynamicWriterT $ do
   -- List of all rules in the application
 
-  (start, trigger) <- newTriggerEvent
-  rule_dyns <- mapM (rule start) rules_raw
+  rule_dyns <- mapM rule rules_raw
+  let rule_dyns_map = D.fromList rule_dyns
   -- Run all the rules once to get them going
-  liftIO $ trigger ()
+  case D.lookup sel rule_dyns_map of
+    Just (MDynamic d) -> forceThunk d
+    Nothing -> return ()
 
 --  let diags = distributeListOverDyn [pm_diags]
   let m = ModuleState { rules = D.fromList rule_dyns }
   return (f, m)
 
   where
-    rule trigger (name :=> (WrappedAction act)) = mdo
-        let wrap = fromMaybe ([], Nothing)
+    rule (name :=> (WrappedAction act)) = mdo
         act_trig <- switchHoldPromptly trigger (fmap (\e -> leftmost [trigger, e]) deps)
         pm <- performEvent (traceAction ident (runEventWriterT (runMaybeT (flip runReaderT renv (act f)))) <$! act_trig)
         let (act_res, deps) = splitE pm
-        d <- holdDyn ([], Nothing) (wrap <$> act_res)
+        (act_des_d, trigger) <- thunk act_res
+        let d = splitThunk [] <$> act_des_d
         let (pm_diags, res) = splitDynPure d
         tellDyn pm_diags
         let ident = show f ++ ": " ++ gshow name
-        res' <- improvingMaybe res
-        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) res'))
+        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) res))
 --        return (name :=> MDynamic res')
 
 
+
+
     renv = REnv genv mm
+
 
 traceAction ident a = a
 traceAction ident a = do
@@ -592,11 +644,11 @@ use sel fp = do
     Just ms -> do
       d <- lift $ hoistMaybe (getMD <$> D.lookup sel (rules ms))
       lift $ lift $ tellEvent (() <$! updated d)
-      liftActionM $ sample (current d)
+      liftActionM $ sampleThunk d
     Nothing -> do
       liftIO $ traceEventIO "FAILED TO FIND"
       lift $ lift $ tellEvent (() <$! updatedMap m)
-      liftIO $ updateMap m [fp]
+      liftIO $ updateMap m [(D.Some sel, fp)]
       return Nothing
 
 useNoTrack :: _ =>  RuleType a -> NormalizedFilePath -> BasicM t m (Maybe a)
