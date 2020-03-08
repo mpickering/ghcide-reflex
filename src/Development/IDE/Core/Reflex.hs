@@ -32,6 +32,7 @@ import Data.GADT.Show.TH
 import Control.Error.Util
 import qualified Data.Dependent.Map as D
 import Data.Dependent.Map (DMap, DSum(..))
+import Data.These(These(..))
 import Reflex.Time
 import Reflex.Network
 import System.Directory
@@ -106,8 +107,14 @@ newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Maybe a) }
 -- All the stuff in here is state which depends on the specific module
 data ModuleState t = ModuleState { rules :: DMap RuleType (MDynamic t) }
 
+data GlobalVar t a = GlobalVar { dyn :: Dynamic t a
+                               , updGlobal :: (a -> a) -> IO ()
+                               -- A function which can be used
+                               -- to update the dynamic
+                               }
 
-data GlobalEnv t = GlobalEnv { globalEnv :: D.DMap GlobalType (Dynamic t)
+
+data GlobalEnv t = GlobalEnv { globalEnv :: D.DMap GlobalType (GlobalVar t)
                              -- The global state of the application, stuff
                              -- which doesn't depend on the current file.
                              , handlers  :: GlobalHandlers t
@@ -394,7 +401,7 @@ reflexOpen logger debouncer opts startServer init_rules = do
     let (mod_rules, global_rules) = partitionRules init_rules
     pb <- getPostBuild
     (input, input_trigger) <- newTriggerEvent
-    (sample, sample_trigger) <- newTriggerEvent
+--    (sample, sample_trigger) <- newTriggerEvent
 
     -- TODO: Deduplicate, global rules need to be MDynamic as well?
     -- Doesn't typecheck if you have the signature (haha)
@@ -404,13 +411,19 @@ reflexOpen logger debouncer opts startServer init_rules = do
           act_trig <- switchHoldPromptly trigger (fmap (\e -> leftmost [trigger, e]) deps)
           pm <- performEvent (traceAction ident (runEventWriterT (runMaybeT (flip runReaderT renv act))) <$! act_trig)
           -}
+          (upd_e, upd) <- newTriggerEvent
           d <- unwrapBG (flip runReaderT renv act)
+          cur <- sample (current d)
+          let go (This a) = Just (a cur)
+              go (That b) = Just b
+              go (These a b) = Just (a b)
+          d' <- holdDyn cur (alignEventWithMaybe go  upd_e  (updated d))
           --let (act_res, deps) = splitE pm
           --d <- holdDyn Nothing act_res
           --d' <- improvingMaybe d
           --let ident = gshow name
 --        return (traceDynE ("D:" ++ ident) res')
-          return (name :=> d)
+          return (name :=> GlobalVar d' upd)
 
     let renv = REnv genv mmap
 
@@ -604,7 +617,7 @@ useNoFile :: _ => GlobalType a
 
 useNoFile sel = do
   m <- globalEnv <$> askGlobal
-  liftActionM $ sample (current $ D.findWithDefault (error $ "MISSING RULE:" ++ gshow sel) sel m)
+  liftActionM $ sample (current $ dyn $ D.findWithDefault (error $ "MISSING RULE:" ++ gshow sel) sel m)
 
 getHandlerEvent sel = do
   sel . handlers <$> askGlobal
