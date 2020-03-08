@@ -112,7 +112,7 @@ thunk :: _ => Event t (Maybe a) -> m (Dynamic t (Thunk a), Event t ())
 thunk e  = do
   (start, grow) <- newTriggerEvent
   start' <- batchOccurrences 0.01 start
-  let trig = print "growing" >> grow Awaiting
+  let trig = grow Awaiting
   d <- holdDyn (Seed trig) (leftmost [maybe Awaiting Value <$> e
                                                 , Awaiting <$ start' ])
   -- Only allow the thunk to improve
@@ -467,6 +467,7 @@ reflexOpen logger debouncer opts startServer init_rules = do
           d <- unwrapBG (flip runReaderT renv act)
           cur <- sample (current d)
           let go (This a) = Just (a cur)
+              -- This is wrong, triggers are broken
               go (That b) = Just b
               go (These a b) = Just (a b)
           d' <- holdDyn cur (alignEventWithMaybe go  upd_e  (updated d))
