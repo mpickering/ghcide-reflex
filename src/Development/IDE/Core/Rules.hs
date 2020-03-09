@@ -29,8 +29,13 @@ module Development.IDE.Core.Rules(
 
 import Fingerprint
 
+import qualified Data.HashMap.Strict as HMap
+import qualified Data.Map as Map
+import Language.Haskell.LSP.Types
+import Language.Haskell.LSP.Core
+import Development.IDE.Core.PositionMapping
 import Development.IDE.Core.FileStore
-import Reflex (holdDyn)
+import Reflex (holdDyn, mergeWith, foldDyn)
 import Data.Binary
 import Data.Bifunctor (second)
 import Control.Monad.Extra
@@ -523,18 +528,39 @@ getModIfaceRule = define GetModIface $ \f -> do
         -- Bang patterns are important to force the inner fields
         Just $! HiFileResult (tmrModSummary tmr) (hm_iface $ tmrModInfo tmr)
 
-{-
-isFileOfInterestRule :: _ => WRule
-isFileOfInterestRule = undefined --defineEarlyCutoff IsFileOfInterest $ \f -> do
---    filesOfInterest <- undefined --getFilesOfInterest TODO with dynamic
-    --let res = f `elem` filesOfInterest
-    --return (Just (if res then "1" else ""), ([], Just res))
-    -}
 initGlobal :: _ => WRule
 initGlobal =
   addIdeGlobal GetInitFuncs $ do
     e <- getInitEvent
-    holdDyn undefined e
+    holdDyn (error "initialisation must happen first") e
+
+positionMap :: WRule
+positionMap =
+  addIdeGlobal GetPositionMap $ do
+    open <- fmap handleOpen . withNotification <$> (getHandlerEvent didOpenTextDocumentNotificationHandler)
+    change <- fmap handleChange . withNotification <$> (getHandlerEvent didChangeTextDocumentNotificationHandler)
+    foldDyn ($) HMap.empty (mergeWith (.) [open, change])
+
+    where
+      handleOpen ((DidOpenTextDocumentParams TextDocumentItem{_uri,_version}))
+        = updatePositionMapping
+            (VersionedTextDocumentIdentifier _uri (Just _version))
+            (List [])
+
+      handleChange (DidChangeTextDocumentParams identifier@VersionedTextDocumentIdentifier{_uri} changes)
+        = updatePositionMapping identifier changes
+
+
+updatePositionMapping :: VersionedTextDocumentIdentifier -> List TextDocumentContentChangeEvent -> PositionMap -> PositionMap
+updatePositionMapping VersionedTextDocumentIdentifier{..} changes allMappings =
+        let uri = toNormalizedUri _uri
+            mappingForUri = HMap.lookupDefault Map.empty uri allMappings
+            updatedMapping =
+                Map.insert _version idMapping $
+                Map.map (\oldMapping -> foldl' applyChange oldMapping changes) mappingForUri
+        in HMap.insert uri updatedMapping allMappings
+
+
 
 
 -- | A rule that wires per-file rules together
@@ -552,4 +578,5 @@ mainRule =
     , loadGhcSession
     , getHiFileRule
     , getModIfaceRule
-    , initGlobal ]
+    , initGlobal
+    , positionMap ]

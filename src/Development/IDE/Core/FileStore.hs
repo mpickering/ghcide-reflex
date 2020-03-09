@@ -155,7 +155,7 @@ fileStoreRules =
 vfsGlobal =
   (addIdeGlobal GetVFSHandle $ do
         e <- fmap (\(v, _,_,_) -> v) <$> getInitEvent
-        holdDyn undefined e)
+        holdDyn (error "initialisation event must happen first") e)
 
 -- | Notify the compiler service that a particular file has been modified.
 --   Use 'Nothing' to say the file is no longer in the virtual file system

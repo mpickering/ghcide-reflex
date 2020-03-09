@@ -16,6 +16,7 @@ module Development.IDE.Core.RuleTypes(
     module Development.IDE.Core.RuleTypes
     ) where
 
+import qualified Data.Map as M
 import           Control.DeepSeq
 import Data.Binary
 import           Development.IDE.Import.DependencyInformation
@@ -25,6 +26,7 @@ import           Data.Typeable
 import qualified Data.Set as S
 import           Development.Shake
 import           GHC.Generics                             (Generic)
+import Development.IDE.Core.PositionMapping
 
 import           GHC
 import Module (InstalledUnitId)
@@ -82,6 +84,9 @@ data GlobalType a where
   GetVFSHandle :: GlobalType VFSHandle
   GetInitFuncs :: GlobalType InitParams
   IdeConfigurationVar :: GlobalType IdeConfiguration
+  GetPositionMap :: GlobalType PositionMap
+
+type PositionMap = (HashMap NormalizedUri (M.Map LSP.TextDocumentVersion PositionMapping))
 
 type InitParams = (VFSHandle, LSP.ClientCapabilities, IO LSP.LspId, (LSP.FromServerMessage -> IO ()))
 
