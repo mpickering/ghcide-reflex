@@ -9,6 +9,7 @@
 
 module Main(main) where
 
+import qualified Data.Dependent.Map as D
 import Reflex
 import Arguments
 import Data.Binary (Binary)
@@ -172,7 +173,9 @@ main = do
                 liftIO $ f (vfs, def, (pure $ IdInt 0), (showEvent lock))
                 liftIO $ putStrLn "\nStep 6/6: Type checking the files"
                 --setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
-                results <- liftIO $ mapM_ (open . toNormalizedFilePath) files
+                let typecheck fp = open (D.Some GetTypecheckedModule
+                                        , toNormalizedFilePath fp)
+                results <- liftIO $ mapM_ typecheck files
                 res <- getAtPoint (toNormalizedFilePath "src/Development/IDE/Core/Rules.hs") (Position 121 24)
                 liftIO $ print res
                 liftIO $ print "waiting"

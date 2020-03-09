@@ -14,9 +14,11 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE DeriveFunctor #-}
 module Development.IDE.Core.Reflex(module Development.IDE.Core.Reflex, HostFrame) where
 
 import Control.Monad.Fix
+import Data.Functor
 import Data.Functor.Barbie
 import Data.Functor.Product
 import Language.Haskell.LSP.Core
@@ -99,18 +101,44 @@ data HoverMap = HoverMap
 type Diagnostics = String
 type RMap t a = M.Map NormalizedFilePath (Dynamic t a)
 
+-- Early cut off
+data Early a = Early (Maybe BS.ByteString) a
+
+unearly :: Early a -> a
+unearly (Early _ a) = a
+
+early :: _ => Dynamic t (Maybe BS.ByteString, a) -> m (Dynamic t (Early a))
+early d = scanDynMaybe (\(h, v) -> Early h v) upd d
+  where
+    -- Nothing means there's no hash, so always update
+    upd (Nothing, a) v = Just (Early Nothing a)
+    -- If there's already a hash, and we get a new hash then update
+    upd (Just h, new_a) (Early (Just h') _) = if h == h'
+                                                  then Nothing
+                                                  else (Just (Early (Just h) new_a))
+    -- No stored, hash, just update
+    upd (h, new_a) (Early Nothing _)   = Just (Early h new_a)
+
 
 -- Like a Maybe, but has to be activated the first time we try to access it
-data Thunk a = Value a | Awaiting | Seed (IO ())
+data Thunk a = Value a | Awaiting | Seed (IO ()) deriving Functor
 
-splitThunk :: a -> Thunk (a, Maybe b)  -> (a, Thunk b)
-splitThunk _ (Value (l, a)) = (l, maybe Awaiting Value a)
+joinThunk :: Thunk (Maybe a) -> Thunk a
+joinThunk (Value m) = maybe Awaiting Value m
+joinThunk Awaiting = Awaiting
+joinThunk (Seed trig) = (Seed trig)
+
+splitThunk :: a -> Thunk (a, b)  -> (a, Thunk b)
+splitThunk _ (Value (l, a)) = (l, Value a)
 splitThunk a (Awaiting)  = (a, Awaiting)
 splitThunk a (Seed trig) = (a, Seed trig)
 
 thunk :: _ => Event t (Maybe a) -> m (Dynamic t (Thunk a), Event t ())
 thunk e  = do
   (start, grow) <- newTriggerEvent
+  -- Without this batching the program never terminates, and I don't know
+  -- why. The artificial delay seems to allow the events to propagate
+  -- correctly.
   start' <- batchOccurrences 0.01 start
   let trig = grow Awaiting
   d <- holdDyn (Seed trig) (leftmost [maybe Awaiting Value <$> e
@@ -126,9 +154,9 @@ forceThunk d = do
     Seed start -> liftIO start
     _ -> return ()
 
-sampleThunk :: _ => Dynamic t (Thunk a) -> m (Maybe a)
+sampleThunk :: _ => Dynamic t (Early (Thunk a)) -> m (Maybe a)
 sampleThunk d = do
-  t <- sample (current d)
+  t <- sample (current (unearly <$> d))
   case t of
     Seed start -> liftIO start >> return Nothing
     Awaiting   -> return Nothing
@@ -148,7 +176,7 @@ improvingResetableThunk = scanDynMaybe id upd
     -- NOPE
     upd _ _ = Nothing
 
-newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Thunk a) }
+newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Early (Thunk a)) }
 
 -- All the stuff in here is state which depends on the specific module
 data ModuleState t = ModuleState { rules :: DMap RuleType (MDynamic t) }
@@ -198,7 +226,7 @@ mkModuleMap :: forall t m . (Adjustable t m
                             , MonadHold t m
                             ) => GlobalEnv t
                  -> [ShakeDefinition (Performable m) t]
-                 -> Event t NormalizedFilePath
+                 -> Event t (D.Some RuleType, NormalizedFilePath)
                  -> m (ModuleMapWithUpdater t)
 mkModuleMap genv  rules_raw input = mdo
 
@@ -208,8 +236,8 @@ mkModuleMap genv  rules_raw input = mdo
   let mk_patch ((fp, v), _) = v
       mkM (sel, fp) = (fp, Just (mkModule genv rules_raw mmu sel fp))
       mk_module fp act _ = mk_patch <$> act
-      sing fp = [(D.Some GetTypecheckedModule, fp)]
-      inp = M.fromList . map mkM <$> mergeWith (++) [(sing <$> input), map_update']
+      sing fp = [fp]
+      inp = M.fromList . map mkM <$> mergeWith (++) [sing <$> input, map_update']
 --  let input_event = (fmap mk_patch . mkModule o e mod_map <$> input)
 
   mod_map <- listWithKeyShallowDiff M.empty inp mk_module  --(mergeWith (<>) [input_event, map_update])
@@ -217,6 +245,9 @@ mkModuleMap genv  rules_raw input = mdo
   return mmu
 
 type Action t m a = NormalizedFilePath -> ActionM t m (IdeResult a)
+
+type EarlyAction t m a = NormalizedFilePath
+                       -> ActionM t m ((Maybe BS.ByteString, IdeResult a))
 
 type CAction t m a = NormalizedFilePath -> ActionM t m (Maybe BS.ByteString, IdeResult a)
 
@@ -251,6 +282,9 @@ data ForallBasic a where
 
 newtype WrappedAction m t a =
           WrappedAction { getAction :: Action t m a }
+
+newtype WrappedEarlyAction m t a =
+         WrappedEarlyAction { getEarlyAction :: EarlyAction t m a }
 
 newtype WrappedActionM m t a =
           WrappedActionM { getActionM :: ActionM t m a }
@@ -295,7 +329,7 @@ instance MonadIO (BasicGuestWrapper t) where
 -- Per module rules are only allowed to sample dynamics, so can be
 -- triggered by external events but the external events also trigger
 -- some global state to be updated.
-type ShakeDefinition m t = Definition RuleType (WrappedAction m) t
+type ShakeDefinition m t = Definition RuleType (WrappedEarlyAction m) t
 
 -- Global definitions build dynamics directly as they need to populate
 -- the global state
@@ -317,11 +351,11 @@ partitionRules (WRule (ModRule r) : xs) = let (rs, gs) = partitionRules xs in  (
 partitionRules (WRule (GlobalRule g) : xs) = let (rs, gs) = partitionRules xs in  (rs, g:gs)
 
 define :: RuleType a -> (forall t . C t => Action t (HostFrame t) a) -> WRule
-define rn a = WRule (ModRule (rn :=> WrappedAction a))
+define rn a = WRule (ModRule (rn :=> WrappedEarlyAction (fmap (fmap (Nothing,)) a)))
 
 -- TODO: Doesn't implement early cutoff, need to generalise ModRule
 defineEarlyCutoff :: RuleType a -> (forall t . C t => CAction t (HostFrame t) a) -> WRule
-defineEarlyCutoff rn a = WRule (ModRule (rn :=> WrappedAction (fmap (fmap snd) a)))
+defineEarlyCutoff rn a = WRule (ModRule (rn :=> WrappedEarlyAction a))
 
 -- Like define but doesn't depend on the filepath, usually depends on the
 -- global input events somehow
@@ -342,7 +376,7 @@ mkModule genv rules_raw mm (D.Some sel) f = runDynamicWriterT $ do
   let rule_dyns_map = D.fromList rule_dyns
   -- Run all the rules once to get them going
   case D.lookup sel rule_dyns_map of
-    Just (MDynamic d) -> forceThunk d
+    Just (MDynamic d) -> forceThunk (unearly <$> d)
     Nothing -> return ()
 
 --  let diags = distributeListOverDyn [pm_diags]
@@ -350,16 +384,18 @@ mkModule genv rules_raw mm (D.Some sel) f = runDynamicWriterT $ do
   return (f, m)
 
   where
-    rule (name :=> (WrappedAction act)) = mdo
+    rule (name :=> (WrappedEarlyAction act)) = mdo
         act_trig <- switchHoldPromptly trigger (fmap (\e -> leftmost [trigger, e]) deps)
         pm <- performEvent (traceAction ident (runEventWriterT (runMaybeT (flip runReaderT renv (act f)))) <$! act_trig)
         let (act_res, deps) = splitE pm
         (act_des_d, trigger) <- thunk act_res
-        let d = splitThunk [] <$> act_des_d
+        let swap_tup ((a, (b, c))) = (b, (a, c))
+        let d = swap_tup . fmap (splitThunk []) . splitThunk Nothing <$> act_des_d
         let (pm_diags, res) = splitDynPure d
+        early_res <- early (fmap joinThunk <$> res)
         tellDyn pm_diags
         let ident = show f ++ ": " ++ gshow name
-        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) res))
+        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res))
 --        return (name :=> MDynamic res')
 
 
@@ -440,7 +476,7 @@ reflexOpen :: Logger
            -> IdeOptions
            -> (Handlers ->
                 ((VFSHandle, LSP.ClientCapabilities, IO LSP.LspId, (LSP.FromServerMessage -> IO ())) -> IO ())
-              -> (NormalizedFilePath -> IO ())
+              -> ((D.Some RuleType, NormalizedFilePath) -> IO ())
               -> ForallBasic ())
            -> Rules
            -> IO ()
@@ -465,12 +501,13 @@ reflexOpen logger debouncer opts startServer init_rules = do
           -}
           (upd_e, upd) <- newTriggerEvent
           d <- unwrapBG (flip runReaderT renv act)
-          cur <- sample (current d)
-          let go (This a) = Just (a cur)
+          d' <- dynApplyEvent upd_e d
+--          cur <- sample (current d)
+--          let go (This a) = Just (a cur)
               -- This is wrong, triggers are broken
-              go (That b) = Just b
-              go (These a b) = Just (a b)
-          d' <- holdDyn cur (alignEventWithMaybe go  upd_e  (updated d))
+--              go (That b) = Just b
+--              go (These a b) = Just (a b)
+--          d' <- holdDyn cur (alignEventWithMaybe go  upd_e  (updated d))
           --let (act_res, deps) = splitE pm
           --d <- holdDyn Nothing act_res
           --d' <- improvingMaybe d
@@ -502,14 +539,15 @@ reflexOpen logger debouncer opts startServer init_rules = do
     let ForallBasic start = startServer hs init_trigger input_trigger
     unwrapBG $ flip runReaderT renv start
 
+    let typecheck fp = input_trigger  (D.Some GetTypecheckedModule, fp)
+
     liftIO $ forkIO $ do
-      input_trigger (toNormalizedFilePath "src/Development/IDE/Core/Rules.hs")
+      typecheck (toNormalizedFilePath "src/Development/IDE/Core/Rules.hs")
       threadDelay 1000000
 --      input_trigger (toNormalizedFilePath "B.hs")
       threadDelay 1000000
       showProfilingData
       threadDelay 1000000000
-      liftIO $ input_trigger (toNormalizedFilePath "def")
 
     --performEvent_ $ liftIO . print <$> (updated diags2)
     return never
@@ -745,3 +783,12 @@ getParsedModuleRule = define GetParsedModule $ \fp -> do
             pure (diag, Just modu)
             -}
 
+dynApplyEvent
+  :: (Adjustable t m, MonadHold t m, MonadFix m)
+  => Event t (a -> a)
+  -> Dynamic t a
+  -> m (Dynamic t a)
+dynApplyEvent e d = do
+  (a, b) <- runWithReplace (pure d) (updated d <&> \i -> foldDyn id i e)
+  dd <- holdDyn a b
+  pure (join dd)

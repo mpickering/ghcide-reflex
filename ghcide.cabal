@@ -177,6 +177,7 @@ executable ghcide
                 "-with-rtsopts=-I0 -qg -A128M"
     main-is: Main.hs
     build-depends:
+        dependent-map,
         reflex,
         hslogger,
         base == 4.*,

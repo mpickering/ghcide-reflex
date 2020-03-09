@@ -41,6 +41,7 @@ import Language.Haskell.LSP.Core
 import Development.IDE.Types.Location
 import Reflex
 import Control.Monad.Trans
+import qualified Data.Dependent.Map as D
 
 
 
@@ -56,7 +57,7 @@ initialise :: Rules
            -> IdeOptions
            -> (Handlers ->
                ((VFSHandle, LSP.ClientCapabilities, IO LSP.LspId, (LSP.FromServerMessage -> IO ())) -> IO ())
-               -> (NormalizedFilePath -> IO ())
+               -> ((D.Some RuleType, NormalizedFilePath) -> IO ())
                -> ForallBasic () )
            -> IO () -- IdeState
 initialise mainRule logger debouncer options start =
