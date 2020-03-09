@@ -17,6 +17,8 @@
 {-# LANGUAGE DeriveFunctor #-}
 module Development.IDE.Core.Reflex(module Development.IDE.Core.Reflex, HostFrame) where
 
+
+--import {-# SOURCE #-} Language.Haskell.Core.FileStore (getModificationTime)
 import Language.Haskell.LSP.Diagnostics
 import qualified Data.SortedList as SL
 import qualified Data.Text as T
@@ -381,8 +383,15 @@ mkModule genv rules_raw mm (D.Some sel) f = do
     Just (MDynamic d) -> forceThunk (unearly <$> d)
     Nothing -> return ()
 
+{-
+  let get_mod ds = do
+        vfs <- sample (current . dyn $ D.findWithDefault (error "error") GetVFSHandle (globalEnv genv))
+        m <- getModificationTime vfs f
+        return (m, ds)
+        -}
+
+--  let diags_with_mod = performEvent_ (get_mod <$> updated diags_e)
   let diags_with_mod = (Nothing,) <$> updated diags_e
---  let diags = dstributeListOverDyn [pm_diags]
   let m = ModuleState { rules = D.fromList rule_dyns
                       , diags = diags_with_mod }
   return (f, m)
