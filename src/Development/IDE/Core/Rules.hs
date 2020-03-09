@@ -534,6 +534,7 @@ initGlobal =
     e <- getInitEvent
     holdDyn (error "initialisation must happen first") e
 
+-- Might be nicer to just move this into the PositionMapping module
 positionMap :: WRule
 positionMap =
   addIdeGlobal GetPositionMap $ do

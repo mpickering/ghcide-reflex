@@ -4,6 +4,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 -- | Utilities and state for the files of interest - those which are currently
 --   open in the editor. The useful function is 'getFilesOfInterest'.

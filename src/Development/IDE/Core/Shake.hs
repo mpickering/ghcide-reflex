@@ -38,6 +38,7 @@ module Development.IDE.Core.Shake(
     actionLogger,
     FileVersion(..), modificationTime,
     Priority(..),
+    updatePositionMapping,
     deleteValue,
     OnDiskRule(..),
     ) where
@@ -780,7 +781,6 @@ modificationTime :: FileVersion -> Maybe (Int, Int)
 modificationTime VFSVersion{} = Nothing
 modificationTime (ModificationTime large small) = Just (large, small)
 
-getDiagnosticsFromStore :: StoreItem -> [Diagnostic]
 getDiagnosticsFromStore (StoreItem _ diags) = concatMap SL.fromSortedList $ Map.elems diags
 
 
@@ -827,3 +827,12 @@ filterVersionMap
 filterVersionMap =
     HMap.intersectionWith $ \versionsToKeep versionMap -> Map.restrictKeys versionMap versionsToKeep
 
+updatePositionMapping :: IdeState -> VersionedTextDocumentIdentifier -> List TextDocumentContentChangeEvent -> IO ()
+updatePositionMapping IdeState{shakeExtras = ShakeExtras{positionMapping}} VersionedTextDocumentIdentifier{..} changes = do
+    modifyVar_ positionMapping $ \allMappings -> do
+        let uri = toNormalizedUri _uri
+        let mappingForUri = HMap.lookupDefault Map.empty uri allMappings
+        let updatedMapping =
+                Map.insert _version idMapping $
+                Map.map (\oldMapping -> foldl' applyChange oldMapping changes) mappingForUri
+        pure $! HMap.insert uri updatedMapping allMappings

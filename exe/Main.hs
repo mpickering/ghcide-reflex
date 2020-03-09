@@ -127,7 +127,7 @@ main = do
 
         let options = defaultIdeOptions $ ForallDynamic (loadSession dir)
         debouncer <- newAsyncDebouncer
-        initialise mainRule --(loadGhcSessionIO >> mainRule -- >> pluginRules plugins >> action kick)
+        initialise (loadGhcSessionIO ++ mainRule) -- >> pluginRules plugins >> action kick)
             (logger minBound) debouncer options
             (\h i _ -> ForallBasic $ liftIO $ runLanguageServer def def onInitialConfiguration onConfigurationChange h i)
     else do

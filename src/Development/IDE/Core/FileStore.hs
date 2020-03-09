@@ -52,6 +52,7 @@ import Language.Haskell.LSP.VFS
 import Reflex
 
 
+
 makeVFSHandle :: IO VFSHandle
 makeVFSHandle = do
     vfsVar <- newVar (1, Map.empty)

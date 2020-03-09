@@ -17,6 +17,11 @@
 {-# LANGUAGE DeriveFunctor #-}
 module Development.IDE.Core.Reflex(module Development.IDE.Core.Reflex, HostFrame) where
 
+import Language.Haskell.LSP.Diagnostics
+import qualified Data.SortedList as SL
+import qualified Data.Text as T
+import Data.List
+import qualified Data.HashMap.Strict as HMap
 import Control.Monad.Fix
 import Data.Functor
 import Data.Functor.Barbie
@@ -180,7 +185,7 @@ newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Early (Thunk a)) }
 
 -- All the stuff in here is state which depends on the specific module
 data ModuleState t = ModuleState { rules :: DMap RuleType (MDynamic t)
-                                 , diags :: Event t [FileDiagnostic] }
+                                 , diags :: Event t (Maybe FileVersion, [FileDiagnostic]) }
 
 data GlobalVar t a = GlobalVar { dyn :: Dynamic t a
                                , updGlobal :: (a -> a) -> IO ()
@@ -376,9 +381,10 @@ mkModule genv rules_raw mm (D.Some sel) f = do
     Just (MDynamic d) -> forceThunk (unearly <$> d)
     Nothing -> return ()
 
---  let diags = distributeListOverDyn [pm_diags]
+  let diags_with_mod = (Nothing,) <$> updated diags_e
+--  let diags = dstributeListOverDyn [pm_diags]
   let m = ModuleState { rules = D.fromList rule_dyns
-                      , diags = updated diags_e }
+                      , diags = diags_with_mod }
   return (f, m)
 
   where
@@ -530,6 +536,8 @@ reflexOpen logger debouncer opts startServer init_rules = do
         typecheckedModules = M.empty
 
     performEvent_ $ liftIO . print <$> input
+
+--    reportDiags all_diags
 --    performEvent_ $ liftIO . print <$> all_diags
 
     (init, init_trigger) <- newTriggerEvent
@@ -553,8 +561,15 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
 -- This use of (++) could be really inefficient, probably a better way to
 -- do it
-collectDiags :: _ => (M.Map NormalizedFilePath (ModuleState t)) -> Event t [FileDiagnostic]
-collectDiags m = mergeWith (++) $ map diags (M.elems m)
+collectDiags :: _ => (M.Map NormalizedFilePath (ModuleState t)) -> Event t [(Maybe FileVersion, [FileDiagnostic])]
+collectDiags m = mergeWith (++) $ map (fmap (:[]) . diags) (M.elems m)
+
+-- | Output the diagnostics, with a 0.1s debouncer
+reportDiags :: _ => Event t _ -> BasicM t m ()
+reportDiags e = do
+  eventer <- askEventer
+  e' <- debounce 0.1 e
+  performEvent_ (liftIO . eventer <$> e')
 
 sampleMaybe :: (Monad m
                , Reflex t
@@ -621,11 +636,19 @@ useNoFile sel = do
   m <- globalEnv <$> askGlobal
   liftActionM $ sample (current $ dyn $ D.findWithDefault (error $ "MISSING RULE:" ++ gshow sel) sel m)
 
+useNoFileBasic :: _ => GlobalType a
+          -> BasicM t m a
+
+useNoFileBasic sel = do
+  m <- globalEnv <$> askGlobal
+  lift $ sample (current $ dyn $ D.findWithDefault (error $ "MISSING RULE:" ++ gshow sel) sel m)
+
 getHandlerEvent sel = do
   sel . handlers <$> askGlobal
 
 getInitEvent = do
   init_e <$> askGlobal
+
 
 withNotification :: _ => Event t (LSP.NotificationMessage m a) -> Event t a
 withNotification = fmap (\(LSP.NotificationMessage _ _ a) -> a)
@@ -643,6 +666,10 @@ getSession = useNoFile_ GetEnv
 
 askModuleMap = asks (module_map)
 askGlobal = asks global
+
+askEventer = do
+  (_, _, _, eventer) <- useNoFileBasic GetInitFuncs
+  return eventer
 
 {-
 getLocatedImportsRule :: _ => ShakeDefinition m t
@@ -703,3 +730,97 @@ dynApplyEvent e d = do
   (a, b) <- runWithReplace (pure d) (updated d <&> \i -> foldDyn id i e)
   dd <- holdDyn a b
   pure (join dd)
+
+{- Diagnostics -}
+
+type Key = D.Some RuleType
+
+updateFileDiagnostics ::
+  _ => Event t (Maybe FileVersion, NormalizedFilePath, Key, [(ShowDiagnostic,Diagnostic)]) -- ^ current results
+  -> m (Dynamic t _, Dynamic t _)
+updateFileDiagnostics diags = do
+--    modTime <- join . fmap currentValue <$> getValues state GetModificationTime fp
+    let split (mt, fp, k, es) =
+            let (currentShown, currentHidden) = partition ((== ShowDiag) . fst) es
+            in ((mt, fp, k, currentShown), (mt, fp, k, currentHidden))
+    let (shown_e, hidden_e) = splitE (split <$> diags)
+    newDiags <- foldDynMaybe updNewDiags (HMap.empty, []) shown_e
+    hiddenDiags <- foldDyn updHiddenDiags HMap.empty hidden_e
+    return (newDiags, hiddenDiags)
+
+
+    where
+      updNewDiags (modTime, fp, k, currentShown) (old, old_newDiags) =
+            let newDiagsStore = setStageDiagnostics fp (vfsVersion =<< modTime)
+                                  (T.pack $ show k) (map snd currentShown) old
+                newDiags = getFileDiagnostics fp newDiagsStore
+            in if old_newDiags == newDiags
+                  then Nothing
+                  else Just (newDiagsStore, newDiags)
+
+      updHiddenDiags (modTime, fp, k, currentHidden) old =
+            let newDiagsStore = setStageDiagnostics fp (vfsVersion =<< modTime)
+                                  (T.pack $ show k) (map snd currentHidden) old
+                newDiags = getFileDiagnostics fp newDiagsStore
+            in newDiagsStore
+
+
+{-
+                     eventer $ publishDiagnosticsNotification (fromNormalizedUri uri) newDiags
+                     -}
+
+--publish
+
+publishDiagnosticsNotification :: Uri -> [Diagnostic] -> LSP.FromServerMessage
+publishDiagnosticsNotification uri diags =
+    LSP.NotPublishDiagnostics $
+    LSP.NotificationMessage "2.0" LSP.TextDocumentPublishDiagnostics $
+    LSP.PublishDiagnosticsParams uri (List diags)
+
+
+
+-- | Sets the diagnostics for a file and compilation step
+--   if you want to clear the diagnostics call this with an empty list
+setStageDiagnostics
+    :: NormalizedFilePath
+    -> LSP.TextDocumentVersion -- ^ the time that the file these diagnostics originate from was last edited
+    -> T.Text
+    -> [LSP.Diagnostic]
+    -> DiagnosticStore
+    -> DiagnosticStore
+setStageDiagnostics fp timeM stage diags ds  =
+    updateDiagnostics ds uri timeM diagsBySource
+    where
+        diagsBySource = M.singleton (Just stage) (SL.toSortedList diags)
+        uri = filePathToUri' fp
+
+getAllDiagnostics ::
+    DiagnosticStore ->
+    [FileDiagnostic]
+getAllDiagnostics =
+    concatMap (\(k,v) -> map (fromUri k,ShowDiag,) $ getDiagnosticsFromStore v) . HMap.toList
+
+getFileDiagnostics ::
+    NormalizedFilePath ->
+    DiagnosticStore ->
+    [LSP.Diagnostic]
+getFileDiagnostics fp ds =
+    maybe [] getDiagnosticsFromStore $
+    HMap.lookup (filePathToUri' fp) ds
+
+filterDiagnostics ::
+    (NormalizedFilePath -> Bool) ->
+    DiagnosticStore ->
+    DiagnosticStore
+filterDiagnostics keep =
+    HMap.filterWithKey (\uri _ -> maybe True (keep . toNormalizedFilePath) $ uriToFilePath' $ fromNormalizedUri uri)
+
+filterVersionMap
+    :: HMap.HashMap NormalizedUri (Set.Set LSP.TextDocumentVersion)
+    -> HMap.HashMap NormalizedUri (M.Map LSP.TextDocumentVersion a)
+    -> HMap.HashMap NormalizedUri (M.Map LSP.TextDocumentVersion a)
+filterVersionMap =
+    HMap.intersectionWith $ \versionsToKeep versionMap -> M.restrictKeys versionMap versionsToKeep
+
+getDiagnosticsFromStore :: StoreItem -> [Diagnostic]
+getDiagnosticsFromStore (StoreItem _ diags) = concatMap SL.fromSortedList $ M.elems diags
