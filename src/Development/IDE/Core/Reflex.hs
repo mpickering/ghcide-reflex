@@ -19,6 +19,7 @@ module Development.IDE.Core.Reflex(module Development.IDE.Core.Reflex, HostFrame
 
 
 --import {-# SOURCE #-} Language.Haskell.Core.FileStore (getModificationTime)
+import Language.Haskell.LSP.VFS
 import Language.Haskell.LSP.Diagnostics
 import qualified Data.SortedList as SL
 import qualified Data.Text as T
@@ -187,7 +188,7 @@ newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Early (Thunk a)) }
 
 -- All the stuff in here is state which depends on the specific module
 data ModuleState t = ModuleState { rules :: DMap RuleType (MDynamic t)
-                                 , diags :: Event t (Maybe FileVersion, [FileDiagnostic]) }
+                                 , diags :: Event t (Maybe Int, [FileDiagnostic]) }
 
 data GlobalVar t a = GlobalVar { dyn :: Dynamic t a
                                , updGlobal :: (a -> a) -> IO ()
@@ -383,15 +384,12 @@ mkModule genv rules_raw mm (D.Some sel) f = do
     Just (MDynamic d) -> forceThunk (unearly <$> d)
     Nothing -> return ()
 
-{-
-  let get_mod ds = do
-        vfs <- sample (current . dyn $ D.findWithDefault (error "error") GetVFSHandle (globalEnv genv))
-        m <- getModificationTime vfs f
-        return (m, ds)
-        -}
-
---  let diags_with_mod = performEvent_ (get_mod <$> updated diags_e)
-  let diags_with_mod = (Nothing,) <$> updated diags_e
+  let get_mod (vfs, ds) = do
+        mbVirtual <- liftIO $ getVirtualFile vfs $ filePathToUri' f
+        return (virtualFileVersion <$> mbVirtual  , ds)
+  let vfs_b = (current . dyn $ D.findWithDefault (error "error") GetVFSHandle (globalEnv genv))
+  diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated diags_e))
+--  let diags_with_mod = (Nothing,) <$> updated diags_e
   let m = ModuleState { rules = D.fromList rule_dyns
                       , diags = diags_with_mod }
   return (f, m)
@@ -570,9 +568,10 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
 -- This use of (++) could be really inefficient, probably a better way to
 -- do it
-collectDiags :: _ => (M.Map NormalizedFilePath (ModuleState t)) -> Event t [(Maybe FileVersion, [FileDiagnostic])]
+collectDiags :: _ => (M.Map NormalizedFilePath (ModuleState t)) -> Event t [(Maybe Int, [FileDiagnostic])]
 collectDiags m = mergeWith (++) $ map (fmap (:[]) . diags) (M.elems m)
 
+--  eventer $ publishDiagnosticsNotification (fromNormalizedUri uri) newDiags
 -- | Output the diagnostics, with a 0.1s debouncer
 reportDiags :: _ => Event t _ -> BasicM t m ()
 reportDiags e = do
@@ -745,7 +744,7 @@ dynApplyEvent e d = do
 type Key = D.Some RuleType
 
 updateFileDiagnostics ::
-  _ => Event t (Maybe FileVersion, NormalizedFilePath, Key, [(ShowDiagnostic,Diagnostic)]) -- ^ current results
+  _ => Event t (Maybe Int, NormalizedFilePath, Key, [(ShowDiagnostic,Diagnostic)]) -- ^ current results
   -> m (Dynamic t _, Dynamic t _)
 updateFileDiagnostics diags = do
 --    modTime <- join . fmap currentValue <$> getValues state GetModificationTime fp
@@ -759,23 +758,22 @@ updateFileDiagnostics diags = do
 
 
     where
-      updNewDiags (modTime, fp, k, currentShown) (old, old_newDiags) =
-            let newDiagsStore = setStageDiagnostics fp (vfsVersion =<< modTime)
+      updNewDiags (ver, fp, k, currentShown) (old, old_newDiags) =
+            let newDiagsStore = setStageDiagnostics fp ver
                                   (T.pack $ show k) (map snd currentShown) old
                 newDiags = getFileDiagnostics fp newDiagsStore
             in if old_newDiags == newDiags
                   then Nothing
                   else Just (newDiagsStore, newDiags)
 
-      updHiddenDiags (modTime, fp, k, currentHidden) old =
-            let newDiagsStore = setStageDiagnostics fp (vfsVersion =<< modTime)
+      updHiddenDiags (ver, fp, k, currentHidden) old =
+            let newDiagsStore = setStageDiagnostics fp ver
                                   (T.pack $ show k) (map snd currentHidden) old
                 newDiags = getFileDiagnostics fp newDiagsStore
             in newDiagsStore
 
 
 {-
-                     eventer $ publishDiagnosticsNotification (fromNormalizedUri uri) newDiags
                      -}
 
 --publish
