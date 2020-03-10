@@ -18,6 +18,7 @@
 module Development.IDE.Core.Reflex(module Development.IDE.Core.Reflex, HostFrame) where
 
 
+import qualified Data.HashSet as HS
 import qualified Data.List.NonEmpty as NL
 --import {-# SOURCE #-} Language.Haskell.Core.FileStore (getModificationTime)
 import Language.Haskell.LSP.VFS
@@ -333,6 +334,9 @@ instance MonadFix (BasicGuestWrapper t) where
 instance MonadIO (BasicGuestWrapper t) where
   liftIO m = BasicGuestWrapper (liftIO m)
 
+instance TriggerEvent t (BasicGuestWrapper t) where
+  newTriggerEvent = BasicGuestWrapper newTriggerEvent
+
 
 
 -- Per module rules are only allowed to sample dynamics, so can be
@@ -472,6 +476,7 @@ loadSession dir v = do
 
 instance TraversableB HandlersG where
 instance ApplicativeB HandlersG where
+instance ConstraintsB HandlersG where
 instance FunctorB HandlersG where
 
 type GlobalHandlers t = HandlersG (Event t)
@@ -479,7 +484,7 @@ type GlobalHandlers t = HandlersG (Event t)
 -- Make the handlers and events which fire when a handler fires
 mkHandlers :: forall m t . _ => m (Handlers, GlobalHandlers t)
 mkHandlers = do
-  res <- btraverse go h
+  res <- btraverseC @Show go h
   let (hs, gs) = bunzip res
   -- Unset this handler as haskell-lsp complains about it
   return (hs { documentOnTypeFormattingHandler = MNothing }, gs)
@@ -487,10 +492,12 @@ mkHandlers = do
     h :: Handlers
     h = def
 
-    go :: f a -> m ((MHandler `Product` (Event t)) a)
+    go :: Show a => f a -> m ((MHandler `Product` (Event t)) a)
     go _ = do
       (input, trig) <- newTriggerEvent
-      return (Pair (MJust trig) (input))
+      let trig' a = hPutStrLn stderr "not" >> trig a
+      let input' = Reflex.traceEvent "handler" input
+      return (Pair (MJust trig') (input'))
 
 reflexOpen :: Logger
            -> Debouncer LSP.NormalizedUri
@@ -546,8 +553,9 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
     mmap <- mkModuleMap genv mod_rules input
 
-    performEvent_ $ liftIO . print <$> input
+--    performEvent_ $ liftIO . print <$> input
 
+    runReaderT (triggerTypecheck) renv
 
 --    reportDiags all_diags
 --    performEvent_ $ liftIO . print <$> all_diags
@@ -561,19 +569,16 @@ reflexOpen logger debouncer opts startServer init_rules = do
     let ForallBasic start = startServer hs init_trigger input_trigger
     unwrapBG $ flip runReaderT renv start
 
-
-    let typecheck fp = input_trigger  (D.Some GetTypecheckedModule, fp)
-
-    liftIO $ forkIO $ do
-      typecheck (toNormalizedFilePath "src/Development/IDE/Core/Rules.hs")
-      threadDelay 1000000
---      input_trigger (toNormalizedFilePath "B.hs")
-      threadDelay 1000000
-      showProfilingData
-      threadDelay 1000000000
-
-    --performEvent_ $ liftIO . print <$> (updated diags2)
     return never
+
+triggerTypecheck :: _ => BasicM t m ()
+triggerTypecheck = do
+  ofInterest <- getGlobalVar OfInterestVar
+  env <- ask
+  lift $ performEvent_ $ mapM_ (flip runReaderT env . trigger) <$> (updated (dyn ofInterest))
+  where
+    trigger nfp = do
+      noTrack (use GetTypecheckedModule nfp)
 
 -- This use of (++) could be really inefficient, probably a better way to
 -- do it
@@ -663,14 +668,19 @@ useNoFileBasic :: _ => GlobalType a
           -> BasicM t m a
 
 useNoFileBasic sel = do
-  m <- globalEnv <$> askGlobal
-  lift $ sample (current $ dyn $ D.findWithDefault (error $ "MISSING RULE:" ++ gshow sel) sel m)
+  v <- getGlobalVar sel
+  lift $ sample (current (dyn v))
 
 getHandlerEvent sel = do
   sel . handlers <$> askGlobal
 
 getInitEvent = do
   init_e <$> askGlobal
+
+getGlobalVar :: _ => GlobalType a -> BasicM t m (GlobalVar t a)
+getGlobalVar sel = do
+  m <- globalEnv <$> askGlobal
+  return $ D.findWithDefault (error $ "MISSING RULE:" ++ gshow sel) sel m
 
 
 withNotification :: _ => Event t (LSP.NotificationMessage m a) -> Event t a

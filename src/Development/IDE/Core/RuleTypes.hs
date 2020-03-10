@@ -75,7 +75,7 @@ data RuleType a where
   IsFileOfInterest :: RuleType Bool
 
 data GlobalType a where
-  GetHscEnv :: GlobalType (GetHscEnvArgs -> HscEnvEq)
+  GetHscEnv :: GlobalType SessionMap
   GhcSessionIO :: GlobalType GhcSessionFun
   GetEnv :: GlobalType HscEnv
   GetIdeOptions :: GlobalType IdeOptions
@@ -95,6 +95,9 @@ data IdeConfiguration = IdeConfiguration
   { workspaceFolders :: HashSet NormalizedUri
   }
   deriving (Show)
+
+data SessionMap = SessionMap { sessionMap :: M.Map GetHscEnvArgs HscEnvEq
+                             , update :: (GetHscEnvArgs, HscEnvEq) -> IO () }
 
 data GetHscEnvArgs = GetHscEnvArgs
     { hscenvOptions :: [String]        -- componentOptions from hie-bios

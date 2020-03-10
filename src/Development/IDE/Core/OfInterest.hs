@@ -53,7 +53,8 @@ ofInterestVar =
     e1 <- withNotification <$> getHandlerEvent didOpenTextDocumentNotificationHandler
     e2 <- withNotification <$> getHandlerEvent didCloseTextDocumentNotificationHandler
 --    e3 <- setInterestEvent
-    foldDyn ($) S.empty (mergeWith (.) [check add <$> e1, check2 remove <$> e2])
+    d <- foldDyn ($) S.empty (mergeWith (.) [check add <$> e1, check2 remove <$> e2])
+    return $ traceDyn "ofInterest" d
   where
       check act (DidOpenTextDocumentParams TextDocumentItem{_uri, _version}) hs =
         whenUriFile _uri hs $ \file -> (act file hs)

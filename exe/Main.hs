@@ -9,6 +9,7 @@
 
 module Main(main) where
 
+import qualified Data.Map as M
 import qualified Data.Dependent.Map as D
 import Reflex
 import Arguments
@@ -129,7 +130,7 @@ main = do
         debouncer <- newAsyncDebouncer
         initialise (loadGhcSessionIO ++ mainRule) -- >> pluginRules plugins >> action kick)
             (logger minBound) debouncer options
-            (\h i _ -> ForallBasic $ liftIO $ runLanguageServer def def onInitialConfiguration onConfigurationChange h i)
+            (\h i _ -> ForallBasic $ liftIO $ void $ forkIO $ runLanguageServer def def onInitialConfiguration onConfigurationChange h i)
     else do
         putStrLn $ "Ghcide setup tester in " ++ dir ++ "."
         putStrLn "Report bugs at https://github.com/digital-asset/ghcide/issues"
@@ -229,12 +230,24 @@ type instance RuleResult GetHscEnv = HscEnvEq
 
 
 loadGhcSessionIO :: Rules
-loadGhcSessionIO = []
-    -- This rule is for caching the GHC session. E.g., even when the cabal file
-    -- changed, if the resulting flags did not change, we would continue to use
-    -- the existing session.
-    {-[addIdeGlobal GetHscEnv $ \(GetHscEnvArgs opts deps) ->
-        liftIO $ createSession $ ComponentOptions opts deps] -}
+loadGhcSessionIO =
+  [addIdeGlobal GetHscEnv $ do
+        (update, trig) <- newTriggerEvent
+        md <- foldDyn (\(k , v) m -> M.insert k v m) M.empty update
+        return $ (\m -> SessionMap m trig) <$> md]
+
+
+getGhcSession :: _ => GetHscEnvArgs -> ActionM t m HscEnvEq
+getGhcSession args@(GetHscEnvArgs opts deps) = do
+  (SessionMap m t) <- useNoFile_ $ GetHscEnv
+  case M.lookup args m of
+    Just res -> return res
+    Nothing -> liftIO $ do
+      r <- createSession $ ComponentOptions opts deps
+      t (args, r)
+      return r
+
+
 
 
 getComponentOptions :: Cradle a -> IO ComponentOptions
@@ -306,8 +319,8 @@ cradleToSession mbYaml cradle = do
                   _ -> deps
     existingDeps <- liftIO $ filterM (IO.doesFileExist) deps'
     --need existingDeps
-    f <- useNoFile_ $ GetHscEnv
-    return (f (GetHscEnvArgs opts deps))
+    --
+    getGhcSession (GetHscEnvArgs opts deps)
 
 
 loadSession :: _ => FilePath -> DynamicM t m (FilePath -> ForallAction HscEnvEq)

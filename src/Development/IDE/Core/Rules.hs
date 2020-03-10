@@ -36,7 +36,6 @@ import Language.Haskell.LSP.Core
 import Development.IDE.Core.PositionMapping
 import Development.IDE.Core.FileStore
 import Reflex (holdDyn, mergeWith, foldDyn)
-import Data.Binary
 import Data.Bifunctor (second)
 import Control.Monad.Extra
 import Control.Monad.Trans.Class
