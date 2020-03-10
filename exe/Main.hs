@@ -9,6 +9,7 @@
 
 module Main(main) where
 
+import qualified Data.Foldable as F
 import qualified Data.Map as M
 import qualified Data.Dependent.Map as D
 import Reflex
@@ -233,7 +234,8 @@ loadGhcSessionIO :: Rules
 loadGhcSessionIO =
   [addIdeGlobal GetHscEnv $ do
         (update, trig) <- newTriggerEvent
-        md <- foldDyn (\(k , v) m -> M.insert k v m) M.empty update
+        update' <- batchOccurrences 0.01 update
+        md <- foldDyn (\kvs m -> M.fromList (F.toList kvs) `M.union` m) M.empty update'
         return $ (\m -> SessionMap m trig) <$> md]
 
 

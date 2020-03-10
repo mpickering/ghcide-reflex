@@ -15,6 +15,8 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 module Development.IDE.Core.Reflex(module Development.IDE.Core.Reflex, HostFrame) where
 
 
@@ -336,6 +338,11 @@ instance MonadIO (BasicGuestWrapper t) where
 
 instance TriggerEvent t (BasicGuestWrapper t) where
   newTriggerEvent = BasicGuestWrapper newTriggerEvent
+
+instance (Monad (HostFrame t), Reflex t) => PerformEvent t (BasicGuestWrapper t) where
+    type Performable (BasicGuestWrapper t) = HostFrame t
+    performEvent m = BasicGuestWrapper (performEvent m)
+    performEvent_ m = BasicGuestWrapper (performEvent_ m)
 
 
 
