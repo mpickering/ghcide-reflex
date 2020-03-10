@@ -480,7 +480,9 @@ type GlobalHandlers t = HandlersG (Event t)
 mkHandlers :: forall m t . _ => m (Handlers, GlobalHandlers t)
 mkHandlers = do
   res <- btraverse go h
-  return $ bunzip res
+  let (hs, gs) = bunzip res
+  -- Unset this handler as haskell-lsp complains about it
+  return (hs { documentOnTypeFormattingHandler = MNothing }, gs)
   where
     h :: Handlers
     h = def
@@ -553,11 +555,12 @@ reflexOpen logger debouncer opts startServer init_rules = do
     (init, init_trigger) <- newTriggerEvent
     (hs, hs_es) <- mkHandlers
 
+    (output_diags, _) <- updateFileDiagnostics all_diags
+    reportDiags renv (fmap snd output_diags)
+
     let ForallBasic start = startServer hs init_trigger input_trigger
     unwrapBG $ flip runReaderT renv start
 
-    (output_diags, _) <- updateFileDiagnostics all_diags
-    reportDiags renv (fmap snd output_diags)
 
     let typecheck fp = input_trigger  (D.Some GetTypecheckedModule, fp)
 
