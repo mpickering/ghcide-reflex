@@ -557,7 +557,7 @@ reflexOpen logger debouncer opts startServer init_rules = do
     unwrapBG $ flip runReaderT renv start
 
     (output_diags, _) <- updateFileDiagnostics all_diags
-    flip runReaderT renv $ reportDiags (fmap snd output_diags)
+    reportDiags renv (fmap snd output_diags)
 
     let typecheck fp = input_trigger  (D.Some GetTypecheckedModule, fp)
 
@@ -579,14 +579,17 @@ collectDiags m = mergeWith (<>) $ map diags (M.elems m)
 
 --  eventer $
 -- | Output the diagnostics, with a 0.1s debouncer
-reportDiags :: _ => Event t _ -> BasicM t m ()
-reportDiags e = do
-  eventer <- askEventer
+reportDiags :: _ => _ -> Event t _ -> m ()
+reportDiags renv e = do
   e' <- debounce 0.1 e
-  performEvent_ (liftIO . mapM_ (eventer . render) <$> e')
+  performEvent_ (mapM_ (flip runReaderT renv . putEvent . render) <$> e')
   where
     render (uri, newDiags)
       = publishDiagnosticsNotification (fromNormalizedUri uri) newDiags
+
+    putEvent e = do
+      eventer <- askEventer
+      liftIO $ eventer e
 
 sampleMaybe :: (Monad m
                , Reflex t
