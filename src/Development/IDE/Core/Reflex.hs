@@ -18,6 +18,7 @@
 module Development.IDE.Core.Reflex(module Development.IDE.Core.Reflex, HostFrame) where
 
 
+import qualified Data.List.NonEmpty as NL
 --import {-# SOURCE #-} Language.Haskell.Core.FileStore (getModificationTime)
 import Language.Haskell.LSP.VFS
 import Language.Haskell.LSP.Diagnostics
@@ -187,8 +188,11 @@ improvingResetableThunk = scanDynMaybe id upd
 newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Early (Thunk a)) }
 
 -- All the stuff in here is state which depends on the specific module
-data ModuleState t = ModuleState { rules :: DMap RuleType (MDynamic t)
-                                 , diags :: Event t (Maybe Int, [FileDiagnostic]) }
+data ModuleState t = ModuleState
+      { rules :: DMap RuleType (MDynamic t)
+      , diags :: Event t (NL.NonEmpty DiagsInfo) }
+
+type DiagsInfo = (Maybe Int, NormalizedFilePath, Key, [FileDiagnostic])
 
 data GlobalVar t a = GlobalVar { dyn :: Dynamic t a
                                , updGlobal :: (a -> a) -> IO ()
@@ -377,24 +381,21 @@ mkModule :: forall t m . (MonadIO m, PerformEvent t m, TriggerEvent t m, Monad m
 mkModule genv rules_raw mm (D.Some sel) f = do
   -- List of all rules in the application
 
-  (rule_dyns, diags_e) <- runDynamicWriterT $ mapM rule rules_raw
+  (rule_dyns, diags_e) <- unzip <$> mapM rule rules_raw
   let rule_dyns_map = D.fromList rule_dyns
   -- Run all the rules once to get them going
   case D.lookup sel rule_dyns_map of
     Just (MDynamic d) -> forceThunk (unearly <$> d)
     Nothing -> return ()
-
-  let get_mod (vfs, ds) = do
-        mbVirtual <- liftIO $ getVirtualFile vfs $ filePathToUri' f
-        return (virtualFileVersion <$> mbVirtual  , ds)
-  let vfs_b = (current . dyn $ D.findWithDefault (error "error") GetVFSHandle (globalEnv genv))
-  diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated diags_e))
+  let diags_with_mod = mergeList diags_e
 --  let diags_with_mod = (Nothing,) <$> updated diags_e
   let m = ModuleState { rules = D.fromList rule_dyns
                       , diags = diags_with_mod }
   return (f, m)
 
   where
+    rule :: _ => ShakeDefinition (Performable m) t
+         -> m (DSum RuleType (MDynamic t), Event t DiagsInfo)
     rule (name :=> (WrappedEarlyAction act)) = mdo
         act_trig <- switchHoldPromptly trigger (fmap (\e -> leftmost [trigger, e]) deps)
         pm <- performEvent (traceAction ident (runEventWriterT (runMaybeT (flip runReaderT renv (act f)))) <$! act_trig)
@@ -404,10 +405,17 @@ mkModule genv rules_raw mm (D.Some sel) f = do
         let d = swap_tup . fmap (splitThunk []) . splitThunk Nothing <$> act_des_d
         let (pm_diags, res) = splitDynPure d
         early_res <- early (fmap joinThunk <$> res)
-        tellDyn pm_diags
+        diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated pm_diags))
+--        tellDyn pm_diags
         let ident = show f ++ ": " ++ gshow name
-        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res))
+        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
 --        return (name :=> MDynamic res')
+--
+      where
+        get_mod (vfs, ds) = do
+          mbVirtual <- liftIO $ getVirtualFile vfs $ filePathToUri' f
+          return (virtualFileVersion <$> mbVirtual, f, D.Some name, ds)
+    vfs_b = (current . dyn $ D.findWithDefault (error "error") GetVFSHandle (globalEnv genv))
 
 
 
@@ -535,14 +543,9 @@ reflexOpen logger debouncer opts startServer init_rules = do
     all_diags <- switchHoldPromptly never (collectDiags <$> updated (getMap mmap))
 
     mmap <- mkModuleMap genv mod_rules input
---    (mmap, diags2) <- test opts env modules input
-    let diags = M.empty
-        hover = M.empty
-        --parsedModules = holdDyn M.empty
-        dependencyInformation = M.empty
-        typecheckedModules = M.empty
 
     performEvent_ $ liftIO . print <$> input
+
 
 --    reportDiags all_diags
 --    performEvent_ $ liftIO . print <$> all_diags
@@ -552,6 +555,9 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
     let ForallBasic start = startServer hs init_trigger input_trigger
     unwrapBG $ flip runReaderT renv start
+
+    (output_diags, _) <- updateFileDiagnostics all_diags
+    flip runReaderT renv $ reportDiags (fmap snd output_diags)
 
     let typecheck fp = input_trigger  (D.Some GetTypecheckedModule, fp)
 
@@ -568,16 +574,19 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
 -- This use of (++) could be really inefficient, probably a better way to
 -- do it
-collectDiags :: _ => (M.Map NormalizedFilePath (ModuleState t)) -> Event t [(Maybe Int, [FileDiagnostic])]
-collectDiags m = mergeWith (++) $ map (fmap (:[]) . diags) (M.elems m)
+collectDiags :: _ => (M.Map NormalizedFilePath (ModuleState t)) -> Event t (NL.NonEmpty DiagsInfo)
+collectDiags m = mergeWith (<>) $ map diags (M.elems m)
 
---  eventer $ publishDiagnosticsNotification (fromNormalizedUri uri) newDiags
+--  eventer $
 -- | Output the diagnostics, with a 0.1s debouncer
 reportDiags :: _ => Event t _ -> BasicM t m ()
 reportDiags e = do
   eventer <- askEventer
   e' <- debounce 0.1 e
-  performEvent_ (liftIO . eventer <$> e')
+  performEvent_ (liftIO . mapM_ (eventer . render) <$> e')
+  where
+    render (uri, newDiags)
+      = publishDiagnosticsNotification (fromNormalizedUri uri) newDiags
 
 sampleMaybe :: (Monad m
                , Reflex t
@@ -744,27 +753,35 @@ dynApplyEvent e d = do
 type Key = D.Some RuleType
 
 updateFileDiagnostics ::
-  _ => Event t (Maybe Int, NormalizedFilePath, Key, [(ShowDiagnostic,Diagnostic)]) -- ^ current results
-  -> m (Dynamic t _, Dynamic t _)
+  _ => Event t (NL.NonEmpty DiagsInfo)
+  -> m (Event t _, Dynamic t _)
 updateFileDiagnostics diags = do
 --    modTime <- join . fmap currentValue <$> getValues state GetModificationTime fp
-    let split (mt, fp, k, es) =
-            let (currentShown, currentHidden) = partition ((== ShowDiag) . fst) es
+    let split :: NL.NonEmpty DiagsInfo -> ([_], [_])
+        split es = unzip (map split_one (NL.toList es))
+        split_one (mt, fp, k, es) =
+            let es' = map (\(_, b, c) -> (b, c)) es
+                (currentShown, currentHidden) =
+                  partition (\(b, c) -> b == ShowDiag) es'
             in ((mt, fp, k, currentShown), (mt, fp, k, currentHidden))
     let (shown_e, hidden_e) = splitE (split <$> diags)
-    newDiags <- foldDynMaybe updNewDiags (HMap.empty, []) shown_e
-    hiddenDiags <- foldDyn updHiddenDiags HMap.empty hidden_e
-    return (newDiags, hiddenDiags)
+    newDiags <- foldDynMaybe (\a b -> checkNew (foldr updNewDiags (fst b, []) a) b)
+                  (HMap.empty, []) shown_e
+    hiddenDiags <- foldDyn (\a b -> foldr updHiddenDiags b a) HMap.empty hidden_e
+    return (updated newDiags, hiddenDiags)
 
 
     where
-      updNewDiags (ver, fp, k, currentShown) (old, old_newDiags) =
+      checkNew (newDiagsStore, newDiags) (old, old_newDiags)
+        = if old_newDiags == newDiags
+            then Nothing
+            else Just (newDiagsStore, newDiags)
+      updNewDiags (ver, fp, k, currentShown) (c, cds) =
             let newDiagsStore = setStageDiagnostics fp ver
-                                  (T.pack $ show k) (map snd currentShown) old
+                                  (T.pack $ show k) (map snd currentShown) c
                 newDiags = getFileDiagnostics fp newDiagsStore
-            in if old_newDiags == newDiags
-                  then Nothing
-                  else Just (newDiagsStore, newDiags)
+                uri = filePathToUri' fp
+            in (newDiagsStore, (uri, newDiags) : cds)
 
       updHiddenDiags (ver, fp, k, currentHidden) old =
             let newDiagsStore = setStageDiagnostics fp ver
