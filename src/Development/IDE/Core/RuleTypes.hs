@@ -96,8 +96,9 @@ data IdeConfiguration = IdeConfiguration
   }
   deriving (Show)
 
-data SessionMap = SessionMap { sessionMap :: M.Map GetHscEnvArgs HscEnvEq
-                             , update :: (GetHscEnvArgs, HscEnvEq) -> IO () }
+data SessionMap = SessionMap { sessionMap :: M.Map FilePath HscEnvEq
+                             , cradleLoc :: FilePath -> IO (Maybe FilePath)
+                             , update :: (FilePath, HscEnvEq) -> IO () }
 
 data GetHscEnvArgs = GetHscEnvArgs
     { hscenvOptions :: [String]        -- componentOptions from hie-bios

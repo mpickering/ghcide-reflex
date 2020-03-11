@@ -127,7 +127,8 @@ main = do
         hPutStrLn stderr "Starting LSP server..."
         hPutStrLn stderr "If you are seeing this in a terminal, you probably should have run ghcide WITHOUT the --lsp option!"
 
-        let options = defaultIdeOptions $ ForallDynamic (loadSession dir)
+        let options = defaultIdeOptions $ ForallDynamic
+                        (return $ constDyn (\fp -> ForallAction (getGhcSession dir fp)))
         debouncer <- newAsyncDebouncer
         initialise (loadGhcSessionIO ++ mainRule) -- >> pluginRules plugins >> action kick)
             (logger minBound) debouncer options
@@ -233,20 +234,32 @@ type instance RuleResult GetHscEnv = HscEnvEq
 loadGhcSessionIO :: Rules
 loadGhcSessionIO =
   [addIdeGlobal GetHscEnv $ do
+
+        cradleLoc <- liftIO $ memoIO $ \v -> do
+          res <- findCradle v
+          -- Sometimes we get C:, sometimes we get c:, and sometimes we get a relative path
+          -- try and normalise that
+          -- e.g. see https://github.com/digital-asset/ghcide/issues/126
+          res' <- traverse IO.makeAbsolute res
+          return $ normalise <$> res'
         (update, trig) <- newTriggerEvent
         update' <- batchOccurrences 0.01 update
         md <- foldDyn (\kvs m -> M.fromList (F.toList kvs) `M.union` m) M.empty update'
-        return $ (\m -> SessionMap m trig) <$> md]
+        return $ (\m -> SessionMap m cradleLoc trig) <$> md]
 
 
-getGhcSession :: _ => GetHscEnvArgs -> ActionM t m HscEnvEq
-getGhcSession args@(GetHscEnvArgs opts deps) = do
-  (SessionMap m t) <- useNoFile_ $ GetHscEnv
-  case M.lookup args m of
+getGhcSession :: _ => FilePath -> FilePath -> ActionM t m HscEnvEq
+getGhcSession dir file = do
+  (SessionMap m cl t) <- useNoFile_ $ GetHscEnv
+  nfp <- liftIO $ cl file
+  case nfp >>= flip M.lookup m of
     Just res -> return res
     Nothing -> liftIO $ do
-      r <- createSession $ ComponentOptions opts deps
-      t (args, r)
+      c <- maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle nfp
+--      cradleToSession file c
+      cmpOpts <- getComponentOptions c
+      r <- createSession cmpOpts
+      t (fromMaybe dir nfp, r)
       return r
 
 
@@ -310,6 +323,7 @@ setHiDir f d =
     -- override user settings to avoid conflicts leading to recompilation
     d { hiDir      = Just f}
 
+{-
 cradleToSession :: _ => Maybe FilePath -> Cradle a -> ActionM t m HscEnvEq
 cradleToSession mbYaml cradle = do
     cmpOpts <- liftIO $ getComponentOptions cradle
@@ -339,6 +353,7 @@ loadSession dir = liftIO $ do
           c <- liftIO $ maybe (loadImplicitCradle $ addTrailingPathSeparator dir) loadCradle file
           cradleToSession file c
     return $ constDyn (\file -> ForallAction (session =<< liftIO (cradleLoc file)))
+    -}
 
 
 -- | Memoize an IO function, with the characteristics:
