@@ -237,7 +237,7 @@ mkModuleMap :: forall t m . (Adjustable t m
                             , MonadIO (Performable m)
                             , MonadHold t m
                             ) => GlobalEnv t
-                 -> [ShakeDefinition (Performable m) t]
+                 -> [ShakeDefinition m t]
                  -> Event t (D.Some RuleType, NormalizedFilePath)
                  -> m (ModuleMapWithUpdater t)
 mkModuleMap genv rules_raw input = mdo
@@ -260,6 +260,9 @@ type Action t m a = NormalizedFilePath -> ActionM t m (IdeResult a)
 
 type EarlyAction t m a = NormalizedFilePath
                        -> ActionM t m ((Maybe BS.ByteString, IdeResult a))
+
+type EarlyActionWithTrigger t m a = NormalizedFilePath
+                       -> ActionM t m (Event t (), Maybe BS.ByteString, IdeResult a)
 
 type CAction t m a = NormalizedFilePath -> ActionM t m (Maybe BS.ByteString, IdeResult a)
 
@@ -298,6 +301,13 @@ newtype WrappedAction m t a =
 newtype WrappedEarlyAction m t a =
          WrappedEarlyAction { getEarlyAction :: EarlyAction t m a }
 
+data WrappedEarlyActionWithTrigger m t a =
+  WrappedEarlyActionWithTrigger { getEarlyActionWithTrigger :: EarlyAction t (Performable m) a
+                                -- The trigger can depend on the state but
+                                -- can't fail or write events
+                                , actionTrigger :: NormalizedFilePath -> BasicM t m (Event t ())
+                                }
+
 newtype WrappedActionM m t a =
           WrappedActionM { getActionM :: ActionM t m a }
 
@@ -308,6 +318,16 @@ type Definition rt f t  = D.DSum rt (f t)
 
 newtype BasicGuestWrapper t a =
           BasicGuestWrapper { unwrapBG :: (forall m . BasicGuestConstraints t m => BasicGuest t m a) }
+
+instance Reflex t => Adjustable t (BasicGuestWrapper t) where
+  runWithReplace m e = BasicGuestWrapper (runWithReplace (unwrapBG m) (fmap unwrapBG e))
+  traverseIntMapWithKeyWithAdjust k m e
+    = BasicGuestWrapper (traverseIntMapWithKeyWithAdjust (\key val -> unwrapBG (k key val))
+                                                         m e)
+  traverseDMapWithKeyWithAdjust kf dm e
+    = BasicGuestWrapper (traverseDMapWithKeyWithAdjust (\k v -> unwrapBG (kf k v)) dm e)
+  traverseDMapWithKeyWithAdjustWithMove kf dm e
+    = BasicGuestWrapper (traverseDMapWithKeyWithAdjustWithMove (\k v -> unwrapBG (kf k v)) dm e)
 
 instance Monad (BasicGuestWrapper t) where
   return x = BasicGuestWrapper (return x)
@@ -349,13 +369,13 @@ instance (Monad (HostFrame t), Reflex t) => PerformEvent t (BasicGuestWrapper t)
 -- Per module rules are only allowed to sample dynamics, so can be
 -- triggered by external events but the external events also trigger
 -- some global state to be updated.
-type ShakeDefinition m t = Definition RuleType (WrappedEarlyAction m) t
+type ShakeDefinition m t = Definition RuleType (WrappedEarlyActionWithTrigger m) t
 
 -- Global definitions build dynamics directly as they need to populate
 -- the global state
 type GlobalDefinition m t = Definition GlobalType (WrappedDynamicM m) t
 
-data Rule t = ModRule (ShakeDefinition (HostFrame t) t) | GlobalRule (GlobalDefinition (BasicGuestWrapper t) t)
+data Rule t = ModRule (ShakeDefinition (BasicGuestWrapper t) t) | GlobalRule (GlobalDefinition (BasicGuestWrapper t) t)
 
 type C t = (Monad (HostFrame t), MonadIO (HostFrame t), Ref (HostFrame t) ~ Ref IO
            , MonadRef (HostFrame t), Reflex t, MonadSample t (HostFrame t))
@@ -365,17 +385,21 @@ data WRule where
 
 type Rules = [WRule]
 
-partitionRules :: C t => Rules -> ([ShakeDefinition (HostFrame t) t], [GlobalDefinition (BasicGuestWrapper t) t])
+partitionRules :: C t => Rules -> ([ShakeDefinition (BasicGuestWrapper t) t], [GlobalDefinition (BasicGuestWrapper t) t])
 partitionRules [] = ([], [])
 partitionRules (WRule (ModRule r) : xs) = let (rs, gs) = partitionRules xs in  (r:rs, gs)
 partitionRules (WRule (GlobalRule g) : xs) = let (rs, gs) = partitionRules xs in  (rs, g:gs)
 
 define :: RuleType a -> (forall t . C t => Action t (HostFrame t) a) -> WRule
-define rn a = WRule (ModRule (rn :=> WrappedEarlyAction (fmap (fmap (Nothing,)) a)))
+define rn a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger (fmap (fmap (Nothing,)) a) (const $ return never)))
 
--- TODO: Doesn't implement early cutoff, need to generalise ModRule
 defineEarlyCutoff :: RuleType a -> (forall t . C t => CAction t (HostFrame t) a) -> WRule
-defineEarlyCutoff rn a = WRule (ModRule (rn :=> WrappedEarlyAction a))
+defineEarlyCutoff rn a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a (const $ return never)))
+
+defineGen :: RuleType a -> (forall t . C t => CAction t (HostFrame t) a)
+                        -> (forall t . C t => NormalizedFilePath -> BasicM t (BasicGuestWrapper t) (Event t ()))
+                        -> WRule
+defineGen rn a trig = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a trig))
 
 -- Like define but doesn't depend on the filepath, usually depends on the
 -- global input events somehow
@@ -384,7 +408,7 @@ addIdeGlobal gn a = WRule (GlobalRule (gn :=> WrappedDynamicM a))
 
 mkModule :: forall t m . (MonadIO m, PerformEvent t m, TriggerEvent t m, Monad m, Reflex t, MonadFix m, _) =>
                  GlobalEnv t
-              -> [ShakeDefinition (Performable m) t]
+              -> [ShakeDefinition m t]
               -> ModuleMapWithUpdater t
               -> D.Some RuleType
               -> NormalizedFilePath
@@ -405,10 +429,11 @@ mkModule genv rules_raw mm (D.Some sel) f = do
   return (f, m)
 
   where
-    rule :: _ => ShakeDefinition (Performable m) t
+    rule :: _ => ShakeDefinition m t
          -> m (DSum RuleType (MDynamic t), Event t DiagsInfo)
-    rule (name :=> (WrappedEarlyAction act)) = mdo
-        act_trig <- switchHoldPromptly trigger (fmap (\e -> leftmost [trigger, e]) deps)
+    rule (name :=> (WrappedEarlyActionWithTrigger act user_trig)) = mdo
+        user_trig' <- runReaderT (user_trig f) renv
+        act_trig <- switchHoldPromptly trigger (fmap (\e -> leftmost [user_trig', trigger, e]) deps)
         pm <- performEvent (traceAction ident (runEventWriterT (runMaybeT (flip runReaderT renv (act f)))) <$! act_trig)
         let (act_res, deps) = splitE pm
         (act_des_d, trigger) <- thunk act_res
@@ -558,7 +583,7 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
     all_diags <- switchHoldPromptly never (collectDiags <$> updated (getMap mmap))
 
-    mmap <- mkModuleMap genv mod_rules input
+    mmap <- unwrapBG $ mkModuleMap genv mod_rules input
 
 --    performEvent_ $ liftIO . print <$> input
 
@@ -659,6 +684,11 @@ noTrack :: _ => ActionM t m a -> BasicM t m (Maybe a)
 noTrack act = ReaderT $ (\renv -> do
                       let x = fst <$> runEventWriterT (runMaybeT (runReaderT act renv))
                       x)
+
+liftBasic :: _ => BasicM t m a -> ActionM t m a
+liftBasic act = do
+  renv <- ask
+  liftActionM (runReaderT act renv)
 
 useNoFile_ :: _ => GlobalType a
            -> ActionM t m a
