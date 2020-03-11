@@ -73,12 +73,11 @@ import Control.Monad.IO.Class
 import qualified GHC.LanguageExtensions as LangExt
 import HscTypes
 import DynFlags (xopt)
-import GHC.Generics(Generic)
+--import GHC.Generics(Generic)
 
 import qualified Development.IDE.Spans.AtPoint as AtPoint
 --import Development.IDE.Core.Service
 import Development.IDE.Core.Reflex
-import Development.Shake.Classes
 
 -- | This is useful for rules to convert rules that can only produce errors or
 -- a result into the more general IdeResult type that supports producing
@@ -160,7 +159,7 @@ getHomeHieFile f = do
 
 getModificationTimeM f = do
   vfs <- useNoFile_ GetVFSHandle
-  (mb, (ds, r)) <- getModificationTime vfs f
+  (_mb, (_ds, r)) <- getModificationTime vfs f
   case r of
     Just v -> return v
     Nothing -> fail  "NOTING"

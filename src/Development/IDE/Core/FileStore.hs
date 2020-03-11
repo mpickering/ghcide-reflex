@@ -34,6 +34,11 @@ import Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
 import qualified Data.Rope.UTF16 as Rope
 import Development.IDE.Core.RuleTypes
+import Language.Haskell.LSP.Types (DidOpenTextDocumentParams(..)
+                                  , TextDocumentItem(TextDocumentItem,_uri, _version)
+                                  , DidChangeTextDocumentParams(..)
+                                  , VersionedTextDocumentIdentifier(..))
+
 
 #ifdef mingw32_HOST_OS
 import Data.Time
@@ -121,9 +126,23 @@ getModificationTime vfs file = do
 foreign import ccall "getmodtime" c_getModTime :: CString -> Ptr CTime -> Ptr CLong -> IO Int
 #endif
 
+-- When to recompute the file contents
+getFileContentsTrigger :: _ => NormalizedFilePath -> BasicM t m (Event t ())
+getFileContentsTrigger fp = do
+  open <- ffilter handleOpen . withNotification <$> (getHandlerEvent didOpenTextDocumentNotificationHandler)
+  change <- ffilter handleChange . withNotification <$> (getHandlerEvent didChangeTextDocumentNotificationHandler)
+  return $ leftmost [() <$ open, () <$ change]
+
+    where
+      handleOpen ((DidOpenTextDocumentParams TextDocumentItem{_uri,_version}))
+        = fromUri (toNormalizedUri _uri) == fp
+
+      handleChange (DidChangeTextDocumentParams identifier@VersionedTextDocumentIdentifier{_uri} changes)
+        = fromUri (toNormalizedUri _uri) == fp
+
 getFileContentsRule :: WRule
 getFileContentsRule =
-    defineEarlyCutoff GetFileContents $ \file -> do
+    defineGen GetFileContents getFileContentsTrigger $ \file -> do
         -- need to depend on modification time to introduce a dependency with Cutoff
         vfs <- useNoFile GetVFSHandle
         (h, (diags, mtime)) <- getModificationTime vfs file

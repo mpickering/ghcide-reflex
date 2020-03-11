@@ -396,10 +396,10 @@ define rn a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger (fmap (fmap (
 defineEarlyCutoff :: RuleType a -> (forall t . C t => CAction t (HostFrame t) a) -> WRule
 defineEarlyCutoff rn a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a (const $ return never)))
 
-defineGen :: RuleType a -> (forall t . C t => CAction t (HostFrame t) a)
-                        -> (forall t . C t => NormalizedFilePath -> BasicM t (BasicGuestWrapper t) (Event t ()))
+defineGen :: RuleType a -> (forall t . C t => NormalizedFilePath -> BasicM t (BasicGuestWrapper t) (Event t ()))
+                        -> (forall t . C t => CAction t (HostFrame t) a)
                         -> WRule
-defineGen rn a trig = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a trig))
+defineGen rn trig a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a trig))
 
 -- Like define but doesn't depend on the filepath, usually depends on the
 -- global input events somehow
