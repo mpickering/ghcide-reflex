@@ -105,8 +105,8 @@ import Development.IDE.Core.Debouncer
 
 data IdeState = IdeState
 
-data Priority = Priority Int
-setPriority a = return a
+--data Priority = Priority Int
+--setPriority a = return a
 
 type IdeResult v = ([FileDiagnostic], Maybe v)
 data HoverMap = HoverMap
@@ -212,7 +212,28 @@ data GlobalEnv t = GlobalEnv { globalEnv :: D.DMap GlobalType (GlobalVar t)
                              , init_e    :: Event t InitParams
                              -- This event fires when the server is
                              -- initialised
+                             , ideLogger :: Logger
                              }
+
+logM :: _ => Priority -> T.Text -> m ()
+logM p s = do
+  logger <- asks (ideLogger . global)
+  liftIO $ logPriority logger p s
+
+logEvent :: _ => Event t (Priority, T.Text) -> m ()
+logEvent e = do
+  performEvent_ (uncurry logM <$> e)
+
+logEventInfo :: _ => Event t T.Text -> m ()
+logEventInfo e = logEvent (fmap (Info,) e)
+
+logAction :: _ => Priority -> Event t (a, T.Text) -> m (Event t a)
+logAction p e = do
+  let (a, l) = splitE e
+  logEvent (fmap (p,) l)
+  return a
+
+
 
 
 type ModuleMap t = (Dynamic t (M.Map NormalizedFilePath (ModuleState t)))
@@ -444,8 +465,8 @@ mkModule genv rules_raw mm (D.Some sel) f = do
         diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated pm_diags))
 --        tellDyn pm_diags
         let ident = show f ++ ": " ++ gshow name
-        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
---        return (name :=> MDynamic res')
+--        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
+        return ((name :=> MDynamic early_res), diags_with_mod)
 --
       where
         get_mod (vfs, ds) = do
@@ -579,7 +600,7 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
     genv_rules <- mapM (rule pb) global_rules
 
-    let genv = GlobalEnv (D.fromList genv_rules) hs_es init
+    let genv = GlobalEnv (D.fromList genv_rules) hs_es init logger
 
     all_diags <- switchHoldPromptly never (collectDiags <$> updated (getMap mmap))
 
@@ -725,6 +746,7 @@ withNotification = fmap (\(LSP.NotificationMessage _ _ a) -> a)
 
 whenUriFile :: Uri -> r -> (NormalizedFilePath -> r) ->  r
 whenUriFile uri def act = maybe def (act . toNormalizedFilePath) (LSP.uriToFilePath uri)
+
 
 
 

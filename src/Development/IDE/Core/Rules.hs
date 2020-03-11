@@ -13,10 +13,12 @@
 --
 module Development.IDE.Core.Rules(
     IdeState,
+    {-
     Priority(..),
     priorityTypeCheck,
     priorityGenerateCore,
     priorityFilesOfInterest,
+    -}
 --    runAction,
     toIdeResult,
     mainRule,
@@ -192,6 +194,7 @@ getParsedModule file = use GetParsedModule file
 -- Rules
 -- These typically go from key to value and are oracles.
 
+{-
 priorityTypeCheck :: Priority
 priorityTypeCheck = Priority 0
 
@@ -200,6 +203,7 @@ priorityGenerateCore = Priority (-1)
 
 priorityFilesOfInterest :: Priority
 priorityFilesOfInterest = Priority (-2)
+-}
 
 getParsedModuleRule :: _ => WRule
 getParsedModuleRule =
@@ -392,7 +396,7 @@ typeCheckRuleDefinition file = do
     else
       pure $ repeat Nothing
 
-  setPriority priorityTypeCheck
+--  setPriority priorityTypeCheck
   IdeOptions { optDefer = defer } <- getIdeOptions
 
   res <- liftIO $ typecheckModule defer hsc (zipWith unpack mirs bytecodes) pm
@@ -417,7 +421,7 @@ generateCore :: _ => NormalizedFilePath -> ActionM t m (IdeResult (SafeHaskellMo
 generateCore file = do
     deps <- use_ GetDependencies file
     (tm:tms) <- uses_ GetTypecheckedModule (file:transitiveModuleDeps deps)
-    setPriority priorityGenerateCore
+--    setPriority priorityGenerateCore
     packageState <- hscEnv <$> use_ GhcSession file
     liftIO $ compileModule packageState [(tmrModSummary x, tmrModInfo x) | x <- tms] tm
 
