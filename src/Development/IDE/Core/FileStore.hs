@@ -37,7 +37,9 @@ import Development.IDE.Core.RuleTypes
 import Language.Haskell.LSP.Types (DidOpenTextDocumentParams(..)
                                   , TextDocumentItem(TextDocumentItem,_uri, _version)
                                   , DidChangeTextDocumentParams(..)
-                                  , VersionedTextDocumentIdentifier(..))
+                                  , VersionedTextDocumentIdentifier(..)
+                                  , DidSaveTextDocumentParams(..)
+                                  , TextDocumentIdentifier(..))
 
 
 #ifdef mingw32_HOST_OS
@@ -127,17 +129,24 @@ foreign import ccall "getmodtime" c_getModTime :: CString -> Ptr CTime -> Ptr CL
 #endif
 
 -- When to recompute the file contents
+-- TODO: Using ffilter is quite bad, should use EventSelector or something
+-- I think
 getFileContentsTrigger :: _ => NormalizedFilePath -> BasicM t m (Event t ())
 getFileContentsTrigger fp = do
   open <- ffilter handleOpen . withNotification <$> (getHandlerEvent didOpenTextDocumentNotificationHandler)
   change <- ffilter handleChange . withNotification <$> (getHandlerEvent didChangeTextDocumentNotificationHandler)
-  return $ leftmost [() <$ open, () <$ change]
+  save <- ffilter handleSave . withNotification <$> (getHandlerEvent didSaveTextDocumentNotificationHandler)
+
+  return $ leftmost [() <$ open, () <$ change, () <$ save]
 
     where
       handleOpen ((DidOpenTextDocumentParams TextDocumentItem{_uri,_version}))
         = fromUri (toNormalizedUri _uri) == fp
 
       handleChange (DidChangeTextDocumentParams identifier@VersionedTextDocumentIdentifier{_uri} changes)
+        = fromUri (toNormalizedUri _uri) == fp
+
+      handleSave (DidSaveTextDocumentParams TextDocumentIdentifier{_uri})
         = fromUri (toNormalizedUri _uri) == fp
 
 getFileContentsRule :: WRule
