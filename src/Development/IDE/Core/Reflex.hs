@@ -242,7 +242,8 @@ logAction p e = do
 
 
 
-type ModuleMap t = (Dynamic t (M.Map NormalizedFilePath (ModuleState t)))
+--type ModuleMap t = (Dynamic t (M.Map NormalizedFilePath (ModuleState t)))
+type ModuleMap t = (Incremental t (PatchMap NormalizedFilePath (ModuleState t)))
 
 data ModuleMapWithUpdater t =
   MMU {
@@ -250,8 +251,8 @@ data ModuleMapWithUpdater t =
     , updateMap :: [(D.Some RuleType, NormalizedFilePath)] -> IO ()
     }
 
-currentMap = current . getMap
-updatedMap = updated . getMap
+currentMap = currentIncremental . getMap
+updatedMap = updatedIncremental . getMap
 
 
 mkModuleMap :: forall t m . (Adjustable t m
@@ -484,8 +485,8 @@ mkModule genv rules_raw mm (D.Some sel) f = do
         diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated pm_diags))
 --        tellDyn pm_diags
         let ident = show f ++ ": " ++ gshow name
---        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
-        return ((name :=> MDynamic early_res), diags_with_mod)
+        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
+--        return ((name :=> MDynamic early_res), diags_with_mod)
 --
       where
         get_mod (vfs, ds) = do
@@ -567,9 +568,8 @@ mkHandlers = do
     go :: Show a => f a -> m ((MHandler `Product` (Event t)) a)
     go _ = do
       (input, trig) <- newTriggerEvent
-      let trig' a = hPutStrLn stderr "not" >> trig a
       let input' = Reflex.traceEvent "handler" input
-      return (Pair (MJust trig') (input'))
+      return (Pair (MJust trig) (input'))
 
 reflexOpen :: Logger
            -> Debouncer LSP.NormalizedUri
@@ -621,7 +621,9 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
     let genv = GlobalEnv (D.fromList genv_rules) hs_es init logger
 
-    all_diags <- switchHoldPromptly never (collectDiags <$> updated (getMap mmap))
+    -- Less important to incrementally build the diagnostics map I think
+    all_diags <- switchHoldPromptly never
+                   (collectDiags <$> updated (incrementalToDynamic (getMap mmap)))
 
     mmap <- unwrapBG $ mkModuleMap genv mod_rules input
 
@@ -714,7 +716,11 @@ use sel fp = do
       liftActionM $ sampleThunk d
     Nothing -> do
       liftIO $ traceEventIO "FAILED TO FIND"
-      lift $ lift $ tellEvent (() <$! updatedMap m)
+      -- TODO: This will trigger a lot of recompilation, should only file
+      -- when the update is for this module. Should use an incremental for
+      -- that I think.
+      let check (PatchMap m) = M.member fp m
+      lift $ lift $ tellEvent (() <$! ffilter check (updatedMap m))
       liftIO $ updateMap m [(D.Some sel, fp)]
       return Nothing
 
@@ -1047,3 +1053,9 @@ filterVersionMap =
 getDiagnosticsFromStore :: StoreItem -> [Diagnostic]
 getDiagnosticsFromStore (StoreItem _ diags) = concatMap SL.fromSortedList $ M.elems diags
 
+{-
+waitEvents :: [Event t ()] -> Event t ()
+waitEvents es =
+  let num = length es
+  cd <- count (map headE es)
+  -}
