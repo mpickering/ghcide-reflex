@@ -314,7 +314,7 @@ getDependencyInformationRule =
 
 reportImportCyclesRule :: _ => WRule
 reportImportCyclesRule =
-    define ReportImportCycles $ \file -> fmap (\errs -> if null errs then ([], Just ()) else (errs, Nothing)) $ do
+    defineEarlyCutoff ReportImportCycles $ \file -> fmap (\errs -> if null errs then (Just "1", ([], Just ())) else (Just "0", (errs, Nothing))) $ do
         DependencyInformation{..} <- use_ GetDependencyInformation file
         let fileId = pathToId depPathIdMap file
         case IntMap.lookup (getFilePathId fileId) depErrorNodes of
