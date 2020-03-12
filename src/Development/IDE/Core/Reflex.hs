@@ -181,13 +181,13 @@ improvingResetableThunk  :: _ => Dynamic t (Thunk a) -> m (Dynamic t (Thunk a))
 improvingResetableThunk = scanDynMaybe id upd
   where
     -- ok, if you insist, write the new value
-    upd (Value a) _ = Just (Value a)
+    upd (Value a) _ = trace "UPDATING: New Value" $ Just (Value a)
     -- Wait, once the trigger is pressed
-    upd Awaiting  (Seed {}) = Just Awaiting
+    upd Awaiting  (Seed {}) = trace "UPDATING: Awaiting" $ Just Awaiting
     -- Allows the thunk to be reset to GC
 --    upd s@(Seed {}) _ = Just s
     -- NOPE
-    upd _ _ = Nothing
+    upd _ _ = trace "Not updating" $ Nothing
 
 newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Early (Thunk a)) }
 
@@ -294,7 +294,13 @@ type EarlyActionWithTrigger t m a = NormalizedFilePath
 
 type CAction t m a = NormalizedFilePath -> ActionM t m (Maybe BS.ByteString, IdeResult a)
 
-type ActionM t m a = (ReaderT (REnv t) (MaybeT (EventWriterT t () m)) a)
+data EType = DepTrigger (D.Some RuleType, NormalizedFilePath)
+              | MissingTrigger NormalizedFilePath
+              | StartTrigger
+              | UserTrigger
+      deriving Show
+
+type ActionM t m a = (ReaderT (REnv t) (MaybeT (EventWriterT t [EType] m)) a)
 
 type DynamicM t m a = (ReaderT (REnv t) m (Dynamic t a))
 
@@ -473,17 +479,18 @@ mkModule genv rules_raw mm (D.Some sel) f = do
     rule :: _ => ShakeDefinition m t
          -> m (DSum RuleType (MDynamic t), Event t DiagsInfo)
     rule (name :=> (WrappedEarlyActionWithTrigger act user_trig)) = mdo
-        user_trig' <- runReaderT (user_trig f) renv
-        act_trig <- switchHoldPromptly trigger (fmap (\e -> leftmost [user_trig', trigger, e]) deps)
-        pm <- performEvent (traceAction ident (runEventWriterT (runMaybeT (flip runReaderT renv (act f)))) <$! act_trig)
+        user_trig' <- ([UserTrigger] <$) <$> runReaderT (user_trig f) renv
+        let rebuild_trigger = (fmap (\e -> leftmost [user_trig', start_trigger, e]) deps)
+        act_trig <- Reflex.traceEvent ident <$> switchHoldPromptly start_trigger rebuild_trigger
+        pm <- performEvent (runEventWriterT (runMaybeT (flip runReaderT renv (act f))) <$! act_trig)
         let (act_res, deps) = splitE pm
         (act_des_d, trigger) <- thunk act_res
+        let start_trigger = [StartTrigger] <$ trigger
         let swap_tup ((a, (b, c))) = (b, (a, c))
         let d = swap_tup . fmap (splitThunk []) . splitThunk Nothing <$> act_des_d
         let (pm_diags, res) = splitDynPure d
         early_res <- early (fmap joinThunk <$> res)
         diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated pm_diags))
---        tellDyn pm_diags
         let ident = show f ++ ": " ++ gshow name
         return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
 --        return ((name :=> MDynamic early_res), diags_with_mod)
@@ -699,6 +706,11 @@ uses sel fps = mapM (use sel) fps
 
 useWithStale = use
 
+updatedThunk :: _ => Dynamic t (Early (Thunk a)) -> Event t (Early (Thunk a))
+updatedThunk  = ffilter (\(Early _ a) -> case a of
+                                            Value {} -> True
+                                            _ -> False ) . updated
+
 use :: (Monad m
        , Reflex t
        , MonadIO m
@@ -712,7 +724,9 @@ use sel fp = do
   case M.lookup fp mm of
     Just ms -> do
       d <- lift $ hoistMaybe (getMD <$> D.lookup sel (rules ms))
-      lift $ lift $ tellEvent (() <$! updated d)
+      -- Only trigger a rebuild if the dependency gets filled in with
+      -- a value, not the seed to arising transition
+      lift $ lift $ tellEvent ([(DepTrigger (D.Some sel, fp))] <$! updatedThunk d)
       liftActionM $ sampleThunk d
     Nothing -> do
       liftIO $ traceEventIO "FAILED TO FIND"
@@ -720,7 +734,7 @@ use sel fp = do
       -- when the update is for this module. Should use an incremental for
       -- that I think.
       let check (PatchMap m) = M.member fp m
-      lift $ lift $ tellEvent (() <$! ffilter check (updatedMap m))
+      lift $ lift $ tellEvent ([MissingTrigger fp]  <$! ffilter check (updatedMap m))
       liftIO $ updateMap m [(D.Some sel, fp)]
       return Nothing
 
@@ -857,19 +871,6 @@ withResponse timeout wrap input f = mdo
 
 
 runActionM act renv = (runEventWriterT (runMaybeT (flip runReaderT renv act)))
-
--- Return an event which fires when the action completes
-block :: _ => Event t () -> ActionM t (Performable m) a
-           -> BasicM t m (Event t a)
-block inp act = mdo
-  -- Hold onto what the value of b was at the start
-  renv <- ask
-  act_trig <- switchHoldPromptly inp (leftmost [stop, deps])
-  pm <- lift $ (performEvent (runActionM act renv <$ act_trig))
-  let (act_res, deps) = splitE pm
-  let res = fmapMaybe id act_res
-      stop = never <$ res
-  headE res
 
 
 
@@ -1059,3 +1060,5 @@ waitEvents es =
   let num = length es
   cd <- count (map headE es)
   -}
+
+
