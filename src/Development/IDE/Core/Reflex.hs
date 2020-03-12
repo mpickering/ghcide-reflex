@@ -197,6 +197,10 @@ data ModuleState t = ModuleState
 
 type DiagsInfo = (Maybe Int, NormalizedFilePath, Key, [FileDiagnostic])
 
+-- Should also have a variant of a global var which is an incremental
+-- rather than a Dynamic for the situation where the global var is storing
+-- something like a map and we don't need to trigger updates for everything
+-- on every update.
 data GlobalVar t a = GlobalVar { dyn :: Dynamic t a
                                , updGlobal :: (a -> a) -> IO ()
                                -- A function which can be used
@@ -223,6 +227,7 @@ logM p s = do
 logEvent :: _ => Event t (Priority, T.Text) -> m ()
 logEvent e = do
   performEvent_ (uncurry logM <$> e)
+
 
 logEventInfo :: _ => Event t T.Text -> m ()
 logEventInfo e = logEvent (fmap (Info,) e)
@@ -396,7 +401,12 @@ type ShakeDefinition m t = Definition RuleType (WrappedEarlyActionWithTrigger m)
 -- the global state
 type GlobalDefinition m t = Definition GlobalType (WrappedDynamicM m) t
 
-data Rule t = ModRule (ShakeDefinition (BasicGuestWrapper t) t) | GlobalRule (GlobalDefinition (BasicGuestWrapper t) t)
+data Rule t = ModRule (ShakeDefinition (BasicGuestWrapper t) t)
+            | GlobalRule (GlobalDefinition (BasicGuestWrapper t) t)
+            | UnitAction (BasicM t (BasicGuestWrapper t) ())
+            -- Some other action, such as logging which doesn't produce a dynamic
+            -- Also hover, goto definition
+            -- Probably also progress as well
 
 type C t = (Monad (HostFrame t), MonadIO (HostFrame t), Ref (HostFrame t) ~ Ref IO
            , MonadRef (HostFrame t), Reflex t, MonadSample t (HostFrame t))
@@ -406,10 +416,14 @@ data WRule where
 
 type Rules = [WRule]
 
-partitionRules :: C t => Rules -> ([ShakeDefinition (BasicGuestWrapper t) t], [GlobalDefinition (BasicGuestWrapper t) t])
-partitionRules [] = ([], [])
-partitionRules (WRule (ModRule r) : xs) = let (rs, gs) = partitionRules xs in  (r:rs, gs)
-partitionRules (WRule (GlobalRule g) : xs) = let (rs, gs) = partitionRules xs in  (rs, g:gs)
+partitionRules :: C t => Rules ->
+                    ([ShakeDefinition (BasicGuestWrapper t) t]
+                    , [GlobalDefinition (BasicGuestWrapper t) t]
+                    , [BasicM t (BasicGuestWrapper t) ()] )
+partitionRules [] = ([], [], [])
+partitionRules (WRule (ModRule r) : xs) = let (rs, gs, us) = partitionRules xs in  (r:rs, gs, us)
+partitionRules (WRule (GlobalRule g) : xs) = let (rs, gs, us) = partitionRules xs in  (rs, g:gs, us)
+partitionRules (WRule (UnitAction u) : xs) = let (rs, gs, us) = partitionRules xs in  (rs, gs, u:us)
 
 define :: RuleType a -> (forall t . C t => Action t (HostFrame t) a) -> WRule
 define rn a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger (fmap (fmap (Nothing,)) a) (const $ return never)))
@@ -421,6 +435,10 @@ defineGen :: RuleType a -> (forall t . C t => NormalizedFilePath -> BasicM t (Ba
                         -> (forall t . C t => CAction t (HostFrame t) a)
                         -> WRule
 defineGen rn trig a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a trig))
+
+unitAction :: (forall t . C t => BasicM t (BasicGuestWrapper t) ())
+           -> WRule
+unitAction a = WRule (UnitAction a)
 
 -- Like define but doesn't depend on the filepath, usually depends on the
 -- global input events somehow
@@ -567,7 +585,7 @@ reflexOpen logger debouncer opts startServer init_rules = do
 
 
   basicHostWithQuit $ mdo
-    let (mod_rules, global_rules) = partitionRules init_rules
+    let (mod_rules, global_rules, unitActions) = partitionRules init_rules
     pb <- getPostBuild
     (input, input_trigger) <- newTriggerEvent
 --    (sample, sample_trigger) <- newTriggerEvent
@@ -620,7 +638,9 @@ reflexOpen logger debouncer opts startServer init_rules = do
     reportDiags renv (fmap snd output_diags)
 
     let ForallBasic start = startServer hs init_trigger input_trigger
-    unwrapBG $ flip runReaderT renv start
+    unwrapBG $ flip runReaderT renv $ do
+                start
+                sequence unitActions
 
     return never
 
@@ -735,6 +755,13 @@ getHandlerEvent sel = do
 getInitEvent = do
   init_e <$> askGlobal
 
+
+-- Don't turn on an event until the init event has happened
+waitInit :: _ => Event t a -> m (Event t a)
+waitInit e = do
+  init_e <- getInitEvent
+  switchHold never (e <$ init_e)
+
 getGlobalVar :: _ => GlobalType a -> BasicM t m (GlobalVar t a)
 getGlobalVar sel = do
   m <- globalEnv <$> askGlobal
@@ -743,6 +770,24 @@ getGlobalVar sel = do
 
 withNotification :: _ => Event t (LSP.NotificationMessage m a) -> Event t a
 withNotification = fmap (\(LSP.NotificationMessage _ _ a) -> a)
+
+withResponse :: _ =>
+                (LSP.ResponseMessage resp -> LSP.FromServerMessage)
+             -> Event t (LSP.RequestMessage cm params resp)
+             -> (params -> BasicM t (Performable m) (Either LSP.ResponseError resp))
+             -> BasicM t m ()
+withResponse wrap input f = do
+  renv <- ask
+  lift $ performEvent_ (flip runReaderT renv . go <$> input)
+  where
+--    go :: LSP.RequestMessage cm params resp -> BasicM t m LSP.FromServerMessage
+    go (LSP.RequestMessage t tid _ p) = do
+      e <- askEventer
+      r <- f p
+      liftIO . e . wrap $ case r of
+        Left err -> LSP.ResponseMessage t (LSP.responseId tid) Nothing (Just err)
+        Right r -> LSP.ResponseMessage t (LSP.responseId tid) (Just r) Nothing
+
 
 whenUriFile :: Uri -> r -> (NormalizedFilePath -> r) ->  r
 whenUriFile uri def act = maybe def (act . toNormalizedFilePath) (LSP.uriToFilePath uri)
@@ -923,3 +968,4 @@ filterVersionMap =
 
 getDiagnosticsFromStore :: StoreItem -> [Diagnostic]
 getDiagnosticsFromStore (StoreItem _ diags) = concatMap SL.fromSortedList $ M.elems diags
+

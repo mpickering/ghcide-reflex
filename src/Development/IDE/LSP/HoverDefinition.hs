@@ -5,14 +5,14 @@
 
 -- | Display information on hover.
 module Development.IDE.LSP.HoverDefinition
-    ( --setHandlersHover
-    --, setHandlersDefinition
+    ( hoverRule
+    , goToDefinitionRule
     ) where
 
 import           Development.IDE.Core.Rules
 import           Development.IDE.Core.Reflex
-import           Development.IDE.Core.Service
-import           Development.IDE.LSP.Server
+--import           Development.IDE.Core.Service
+--import           Development.IDE.LSP.Server
 import           Development.IDE.Types.Location
 import           Development.IDE.Types.Logger
 import qualified Language.Haskell.LSP.Core       as LSP
@@ -29,6 +29,18 @@ hover          = request "Hover"      getAtPoint     Nothing      foundHover
 foundHover :: (Maybe Range, [T.Text]) -> Maybe Hover
 foundHover (mbRange, contents) =
   Just $ Hover (HoverContents $ MarkupContent MkMarkdown $ T.intercalate sectionSeparator contents) mbRange
+
+hoverRule :: WRule
+hoverRule = unitAction $ do
+  hover_e <- getHandlerEvent LSP.hoverHandler
+  e <- waitInit hover_e
+  withResponse RspHover e hover
+
+goToDefinitionRule :: WRule
+goToDefinitionRule = unitAction $ do
+  goto_e <- getHandlerEvent LSP.definitionHandler
+  e <- waitInit goto_e
+  withResponse RspDefinition goto_e gotoDefinition
 
 {-
 setHandlersDefinition, setHandlersHover :: PartialHandlers c

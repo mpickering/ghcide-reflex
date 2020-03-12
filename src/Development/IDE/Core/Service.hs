@@ -34,6 +34,7 @@ import Data.Either.Extra
 import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP
 import qualified Language.Haskell.LSP.Types.Capabilities as LSP
+import Development.IDE.LSP.HoverDefinition
 
 import           Development.IDE.Core.Reflex
 import           Development.IDE.Core.RuleTypes
@@ -42,6 +43,7 @@ import Development.IDE.Types.Location
 import Reflex
 import Control.Monad.Trans
 import qualified Data.Dependent.Map as D
+import Development.IDE.Core.IdeConfiguration
 
 
 
@@ -70,6 +72,9 @@ initialise mainRule logger debouncer options start =
             : addIdeGlobal GhcSessionIO (do let (ForallDynamic m') = optGhcSession options
                                             m <- m'
                                             return (GhcSessionFun <$> m))
+            : ideConfigurationRule
+            : hoverRule
+            : goToDefinitionRule
             : (fileStoreRules
             ++ ofInterestRules -- In a global dynamic
 --            ++ fileExistsRules getLspId caps vfs

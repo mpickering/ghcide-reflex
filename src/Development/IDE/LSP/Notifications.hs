@@ -8,7 +8,6 @@ module Development.IDE.LSP.Notifications
     ( --setHandlersNotifications
     ) where
 
-import           Development.IDE.LSP.Server
 import qualified Language.Haskell.LSP.Core        as LSP
 import           Language.Haskell.LSP.Types
 import qualified Language.Haskell.LSP.Types       as LSP
@@ -27,6 +26,29 @@ import qualified Data.Text                        as Text
 --import           Development.IDE.Core.FileStore   (setSomethingModified)
 --import           Development.IDE.Core.FileExists  (modifyFileExists)
 import           Development.IDE.Core.OfInterest
+import Development.IDE.Core.Reflex
+import Reflex
+
+-- This isn't hooked in anywhere yet, not sure where is best to place the
+-- logs, in the handler for other things or separately.
+logNotifications :: WRule
+logNotifications = unitAction $ do
+    open_e <- withNotification <$> getHandlerEvent LSP.didOpenTextDocumentNotificationHandler
+    close_e <- withNotification <$> getHandlerEvent LSP.didCloseTextDocumentNotificationHandler
+--    e3 <- setInterestEvent
+    mapM_ (logEvent . fmap (Info,))
+          [ (fmapMaybe checkOpen open_e)
+          , (fmapMaybe checkClose close_e)
+          ]
+  where
+      checkOpen (DidOpenTextDocumentParams TextDocumentItem{_uri, _version}) =
+        whenUriFile _uri Nothing $ \file ->
+          Just ("Opened text document: " <> getUri _uri)
+
+
+      checkClose (DidCloseTextDocumentParams TextDocumentIdentifier{_uri}) =
+        whenUriFile _uri Nothing $ \file ->
+          Just ("Closed text document:" <> getUri _uri)
 
 {-
 

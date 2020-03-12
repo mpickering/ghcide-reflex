@@ -5,6 +5,7 @@ module Development.IDE.Core.IdeConfiguration
   , parseConfiguration
   , parseWorkspaceFolder
   , isWorkspaceFile
+  , ideConfigurationRule
   )
 where
 

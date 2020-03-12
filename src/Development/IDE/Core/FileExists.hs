@@ -32,6 +32,7 @@ import qualified System.Directory as Dir
 import Control.Monad.IO.Class
 import Development.IDE.Core.RuleTypes
 import Language.Haskell.LSP.Core
+import Development.IDE.Types.Logger
 import Reflex (foldDyn)
 
 
@@ -97,15 +98,18 @@ fileExistsRules = [fileExistsVar]
 fileExistsVar :: _ => WRule
 fileExistsVar = addIdeGlobal FileExistsMapVar $ do
   ce <- withNotification <$> getHandlerEvent didChangeWatchedFilesNotificationHandler
-  foldDyn HashMap.union HashMap.empty (go <$> ce)
+  updates <- logAction Info (go <$> ce)
+  foldDyn HashMap.union HashMap.empty updates
   where
-    go (DidChangeWatchedFilesParams fileEvents) = HashMap.fromList $
-                    mapMaybe
+    go (DidChangeWatchedFilesParams fileEvents) =
+        let es = mapMaybe
                         (\(FileEvent uri ev) ->
                             (, ev /= FcDeleted) . toNormalizedFilePath
                             <$> uriToFilePath uri
                         )
                         ( (F.toList fileEvents) )
+            msg = T.pack $ show es
+        in (HashMap.fromList es, "Files created or deleted:" <> msg)
 
 --   Requires an lsp client that provides WatchedFiles notifications.
 fileExistsRulesFast :: _ => IO LspId -> VFSHandle -> NormalizedFilePath -> ActionM t m Bool

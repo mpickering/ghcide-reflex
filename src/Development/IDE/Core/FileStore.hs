@@ -131,6 +131,8 @@ foreign import ccall "getmodtime" c_getModTime :: CString -> Ptr CTime -> Ptr CL
 -- When to recompute the file contents
 -- TODO: Using ffilter is quite bad, should use EventSelector or something
 -- I think
+-- TODO: Also trigger on DidChangeWatchedFileParams events
+-- but need to make that an incremental rather than dynamic really
 getFileContentsTrigger :: _ => NormalizedFilePath -> BasicM t m (Event t ())
 getFileContentsTrigger fp = do
   open <- ffilter handleOpen . withNotification <$> (getHandlerEvent didOpenTextDocumentNotificationHandler)

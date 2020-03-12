@@ -135,7 +135,9 @@ runLanguageServer options userHandlers onInitialConfig onConfigChange hs init_ca
 
             -- Feed this information into the reflex network
             init_callback (makeLSPVFSHandle lspFuncs, clientCapabilities, getNextReqId, sendFunc)
-
+            -- TODO: All this stuff is not currently used, need to
+            -- hook it into the initialisation of handlers to deal with
+            -- cancellation and so on.
             _ <- flip forkFinally (const exitClientMsg) $ forever $ do
                 msg <- readChan clientMsgChan
                 case msg of
