@@ -96,6 +96,7 @@ import Reflex.Profiled
 import Debug.Trace
 import Control.Monad.Ref
 import Reflex.Host.Class
+import Data.Time.Clock
 
 import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP
@@ -771,22 +772,73 @@ getGlobalVar sel = do
 withNotification :: _ => Event t (LSP.NotificationMessage m a) -> Event t a
 withNotification = fmap (\(LSP.NotificationMessage _ _ a) -> a)
 
-withResponse :: _ =>
-                (LSP.ResponseMessage resp -> LSP.FromServerMessage)
-             -> Event t (LSP.RequestMessage cm params resp)
-             -> (params -> BasicM t (Performable m) (Either LSP.ResponseError resp))
-             -> BasicM t m ()
-withResponse wrap input f = do
+performEventB :: _ => Event t (BasicM t (Performable m) a) -> BasicM t m (Event t a)
+performEventB b = do
   renv <- ask
-  lift $ performEvent_ (flip runReaderT renv . go <$> input)
+  let run = flip runReaderT renv <$> b
+  lift $ performEvent run
+
+
+performEventB_ :: _ => Event t (BasicM t (Performable m) ()) -> BasicM t m ()
+performEventB_ b = do
+  renv <- ask
+  let run = flip runReaderT renv <$> b
+  lift $ performEvent_ run
+
+withResponse :: _ =>
+                Maybe NominalDiffTime
+             -> (LSP.ResponseMessage resp -> LSP.FromServerMessage)
+             -> Event t (LSP.RequestMessage cm params resp)
+             -> (params -> ActionM t (Performable m) (Either LSP.ResponseError resp))
+             -> BasicM t m ()
+withResponse timeout wrap input f = do
+  -- Run the action once, to either get the result or the dependencies we
+  -- need to wait for.
+  e1 <- performEventB (go <$> input)
+  -- A dynamic which holds the most recent request
+  d  <- holdDyn Nothing (Just <$> e1)
+  -- An event which fires when the dependency which failed for the most
+  -- recent request failed.
+  e2 <- switchHoldPromptly never (getDeps <$> (fmapMaybe id (updated d)))
+  -- When e2 fires, run the event again
+  e3 <- performEventB (go <$> e2)
+  -- Now race e1 and e3 until one returns Just
+  let e4 = leftmost (map (fmapMaybe check) [e1, e3])
+  -- And finally send the output for this event
+  performEventB_ (output <$> e4)
+
   where
+    check :: (Maybe a, b, c) -> Maybe (c, a)
+    check (m, _, i) = (i,) <$> m
+    getDeps (_, deps, _) = deps
 --    go :: LSP.RequestMessage cm params resp -> BasicM t m LSP.FromServerMessage
-    go (LSP.RequestMessage t tid _ p) = do
+    go i@(LSP.RequestMessage t tid _ p) = do
+      renv <- ask
+      (mr, deps) <- lift $ runActionM (f p) renv
+      return (mr, i <$ deps, i)
+
+    output (LSP.RequestMessage t tid _ p, r) = do
       e <- askEventer
-      r <- f p
       liftIO . e . wrap $ case r of
-        Left err -> LSP.ResponseMessage t (LSP.responseId tid) Nothing (Just err)
-        Right r -> LSP.ResponseMessage t (LSP.responseId tid) (Just r) Nothing
+          Left err -> LSP.ResponseMessage t (LSP.responseId tid) Nothing (Just err)
+          Right r -> LSP.ResponseMessage t (LSP.responseId tid) (Just r) Nothing
+
+
+runActionM act renv = (runEventWriterT (runMaybeT (flip runReaderT renv act)))
+
+-- Return an event which fires when the action completes
+block :: _ => Event t () -> ActionM t (Performable m) a
+           -> BasicM t m (Event t a)
+block inp act = mdo
+  -- Hold onto what the value of b was at the start
+  renv <- ask
+  act_trig <- switchHoldPromptly inp (leftmost [stop, deps])
+  pm <- lift $ (performEvent (runActionM act renv <$ act_trig))
+  let (act_res, deps) = splitE pm
+  let res = fmapMaybe id act_res
+      stop = never <$ res
+  headE res
+
 
 
 whenUriFile :: Uri -> r -> (NormalizedFilePath -> r) ->  r

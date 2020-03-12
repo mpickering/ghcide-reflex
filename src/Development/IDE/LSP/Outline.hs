@@ -1,9 +1,10 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 #include "ghc-api-version.h"
 
 module Development.IDE.LSP.Outline
-  (
+  ( outlineRule
   )
 where
 
@@ -18,27 +19,29 @@ import           Data.Text                      ( Text
                                                 )
 import qualified Data.Text                     as T
 import           Development.IDE.Core.Rules
-import           Development.IDE.Core.Shake
+import           Development.IDE.Core.RuleTypes
+import           Development.IDE.Core.Reflex
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Error      ( srcSpanToRange )
-import           Development.IDE.LSP.Server
 import           Development.IDE.Types.Location
 import           Outputable                     ( Outputable
                                                 , ppr
                                                 , showSDocUnsafe
                                                 )
 
-{-
-setHandlersOutline :: PartialHandlers c
-setHandlersOutline = PartialHandlers $ \WithMessage {..} x -> return x
-  { LSP.documentSymbolHandler = withResponse RspDocumentSymbols moduleOutline
-  }
+
+outlineRule :: WRule
+outlineRule = unitAction $ do
+  sym_e <- getHandlerEvent LSP.documentSymbolHandler
+  e <- waitInit sym_e
+  withResponse Nothing RspDocumentSymbols e moduleOutline
+
 moduleOutline
-  :: LSP.LspFuncs c -> IdeState -> DocumentSymbolParams -> IO (Either ResponseError DSResult)
-moduleOutline _lsp ideState DocumentSymbolParams { _textDocument = TextDocumentIdentifier uri }
+  :: _ => DocumentSymbolParams -> ActionM t m (Either ResponseError DSResult)
+moduleOutline DocumentSymbolParams { _textDocument = TextDocumentIdentifier uri }
   = case uriToFilePath uri of
     Just (toNormalizedFilePath -> fp) -> do
-      mb_decls <- runAction ideState $ use GetParsedModule fp
+      mb_decls <- use GetParsedModule fp
       pure $ Right $ case mb_decls of
         Nothing -> DSDocumentSymbols (List [])
         Just (ParsedModule { pm_parsed_source = L _ltop HsModule { hsmodName, hsmodDecls, hsmodImports } })
@@ -218,4 +221,3 @@ showRdrName = pprText
 
 pprText :: Outputable a => a -> Text
 pprText = pack . showSDocUnsafe . ppr
--}

@@ -44,6 +44,7 @@ import Reflex
 import Control.Monad.Trans
 import qualified Data.Dependent.Map as D
 import Development.IDE.Core.IdeConfiguration
+import Development.IDE.LSP.Outline
 
 
 
@@ -75,6 +76,7 @@ initialise mainRule logger debouncer options start =
             : ideConfigurationRule
             : hoverRule
             : goToDefinitionRule
+            : outlineRule
             : (fileStoreRules
             ++ ofInterestRules -- In a global dynamic
 --            ++ fileExistsRules getLspId caps vfs

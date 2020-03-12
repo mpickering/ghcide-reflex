@@ -34,13 +34,13 @@ hoverRule :: WRule
 hoverRule = unitAction $ do
   hover_e <- getHandlerEvent LSP.hoverHandler
   e <- waitInit hover_e
-  withResponse RspHover e hover
+  withResponse (Just 0.1) RspHover e (liftBasic . hover)
 
 goToDefinitionRule :: WRule
 goToDefinitionRule = unitAction $ do
   goto_e <- getHandlerEvent LSP.definitionHandler
   e <- waitInit goto_e
-  withResponse RspDefinition goto_e gotoDefinition
+  withResponse (Just 1) RspDefinition goto_e (liftBasic . gotoDefinition)
 
 {-
 setHandlersDefinition, setHandlersHover :: PartialHandlers c
