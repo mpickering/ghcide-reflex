@@ -786,12 +786,17 @@ performEventB_ b = do
   lift $ performEvent_ run
 
 withResponse :: _ =>
-                Maybe NominalDiffTime
+                Maybe (NominalDiffTime, resp)
              -> (LSP.ResponseMessage resp -> LSP.FromServerMessage)
              -> Event t (LSP.RequestMessage cm params resp)
              -> (params -> ActionM t (Performable m) (Either LSP.ResponseError resp))
              -> BasicM t m ()
-withResponse timeout wrap input f = do
+withResponse timeout wrap input f = mdo
+  timer <- case timeout of
+             -- Wait this time period
+             Just (i, r) -> mkTimeout i r input
+             -- Wait forever
+             Nothing -> return never
   -- Run the action once, to either get the result or the dependencies we
   -- need to wait for.
   e1 <- performEventB (go <$> input)
@@ -799,13 +804,18 @@ withResponse timeout wrap input f = do
   d  <- holdDyn Nothing (Just <$> e1)
   -- An event which fires when the dependency which failed for the most
   -- recent request failed.
-  e2 <- switchHoldPromptly never (getDeps <$> (fmapMaybe id (updated d)))
-  -- When e2 fires, run the event again
+  e2 <- switchHoldPromptly never
+          (leftmost [(getDeps <$> (fmapMaybe id (updated d))), never <$ e4])
+  -- When e2 fires, run the event again, the dependencies are now updated.
+  -- It may fail again, so perhaps should combine the dependencies with e2
+  -- recursively.
   e3 <- performEventB (go <$> e2)
   -- Now race e1 and e3 until one returns Just
+  -- When e4 fires we reset e2 so we don't send duplicate responses.
+  -- I don't think resetting d is necessary.
   let e4 = leftmost (map (fmapMaybe check) [e1, e3])
   -- And finally send the output for this event
-  performEventB_ (output <$> e4)
+  performEventB_ (output <$> (leftmost [formatOutput <$> e4, timer]))
 
   where
     check :: (Maybe a, b, c) -> Maybe (c, a)
@@ -817,11 +827,27 @@ withResponse timeout wrap input f = do
       (mr, deps) <- lift $ runActionM (f p) renv
       return (mr, i <$ deps, i)
 
-    output (LSP.RequestMessage t tid _ p, r) = do
+    mkFailure err (LSP.RequestMessage t tid _ p) =
+      LSP.ResponseMessage t (LSP.responseId tid) Nothing (Just err)
+
+    mkSuccess r (LSP.RequestMessage t tid _ p) =
+      LSP.ResponseMessage t (LSP.responseId tid) (Just r) Nothing
+
+    formatOutput (req@(LSP.RequestMessage t tid _ p), r) =
+      case r of
+          Left err -> mkFailure err req
+          Right r -> mkSuccess r req
+
+    output msg = do
       e <- askEventer
-      liftIO . e . wrap $ case r of
-          Left err -> LSP.ResponseMessage t (LSP.responseId tid) Nothing (Just err)
-          Right r -> LSP.ResponseMessage t (LSP.responseId tid) (Just r) Nothing
+      liftIO . e . wrap $ msg
+
+    -- When the event fires, map the failure case and delay by the timeout
+    mkTimeout interval r e = do
+--      let err = LSP.ResponseError LSP.UnknownErrorCode "Timeout" Nothing
+      delay interval (mkSuccess r <$> e)
+
+
 
 
 runActionM act renv = (runEventWriterT (runMaybeT (flip runReaderT renv act)))

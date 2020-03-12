@@ -18,7 +18,6 @@ import           Data.Text                      ( Text
                                                 , pack
                                                 )
 import qualified Data.Text                     as T
-import           Development.IDE.Core.Rules
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Reflex
 import           Development.IDE.GHC.Compat

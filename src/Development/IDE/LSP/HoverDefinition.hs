@@ -21,8 +21,8 @@ import           Language.Haskell.LSP.Types
 
 import qualified Data.Text as T
 
-gotoDefinition :: _ => TextDocumentPositionParams -> BasicM t m (Either ResponseError LocationResponseParams)
-hover          :: _ => TextDocumentPositionParams -> BasicM t m (Either ResponseError (Maybe Hover))
+gotoDefinition :: _ => TextDocumentPositionParams -> ActionM t m (Either ResponseError LocationResponseParams)
+hover          :: _ => TextDocumentPositionParams -> ActionM t m (Either ResponseError (Maybe Hover))
 gotoDefinition = request "Definition" getDefinition (MultiLoc []) SingleLoc
 hover          = request "Hover"      getAtPoint     Nothing      foundHover
 
@@ -34,13 +34,13 @@ hoverRule :: WRule
 hoverRule = unitAction $ do
   hover_e <- getHandlerEvent LSP.hoverHandler
   e <- waitInit hover_e
-  withResponse (Just 0.1) RspHover e (liftBasic . hover)
+  withResponse (Just (0.1, Nothing)) RspHover e hover
 
 goToDefinitionRule :: WRule
 goToDefinitionRule = unitAction $ do
   goto_e <- getHandlerEvent LSP.definitionHandler
   e <- waitInit goto_e
-  withResponse (Just 1) RspDefinition goto_e (liftBasic . gotoDefinition)
+  withResponse (Just (1, MultiLoc [])) RspDefinition goto_e gotoDefinition
 
 {-
 setHandlersDefinition, setHandlersHover :: PartialHandlers c
@@ -53,18 +53,18 @@ setHandlersHover      = PartialHandlers $ \WithMessage{..} x ->
 -- | Respond to and log a hover or go-to-definition request
 request
   :: _ => T.Text
-  -> (NormalizedFilePath -> Position -> BasicM t m (Maybe a))
+  -> (NormalizedFilePath -> Position -> ActionM t m (Maybe a))
   -> b
   -> (a -> b)
   -> TextDocumentPositionParams
-  -> BasicM t m (Either ResponseError b)
+  -> ActionM t m (Either ResponseError b)
 request label getResults notFound found (TextDocumentPositionParams (TextDocumentIdentifier uri) pos _) = do
     mbResult <- case uriToFilePath' uri of
         Just path -> logAndRunRequest label getResults pos path
         Nothing   -> pure Nothing
     pure $ Right $ maybe notFound found mbResult
 
-logAndRunRequest :: _ => T.Text -> (NormalizedFilePath -> Position -> BasicM t m b)  -> Position -> String -> BasicM t m b
+logAndRunRequest :: _ => T.Text -> (NormalizedFilePath -> Position -> ActionM t m b)  -> Position -> String -> ActionM t m b
 logAndRunRequest label getResults pos path = do
   let filePath = toNormalizedFilePath path
 --  logInfo (ideLogger ide) $

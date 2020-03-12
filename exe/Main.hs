@@ -179,13 +179,6 @@ main = do
                 let typecheck fp = open (D.Some GetTypecheckedModule
                                         , toNormalizedFilePath fp)
                 results <- liftIO $ mapM_ typecheck files
-                res <- getAtPoint (toNormalizedFilePath "src/Development/IDE/Core/Rules.hs") (Position 121 24)
-                liftIO $ print res
-                liftIO $ print "waiting"
-                liftIO $ threadDelay 10000000
-                liftIO $ print "waited"
-                res <- getAtPoint (toNormalizedFilePath "src/Development/IDE/Core/Rules.hs") (Position 121 24)
-                liftIO $ print res
                 {-
                 let (worked, failed) = partition fst $ zip (map isJust results) files
                 when (failed /= []) $

@@ -114,18 +114,18 @@ getDependencies :: _ => NormalizedFilePath -> ActionM t m (Maybe [NormalizedFile
 getDependencies file = fmap transitiveModuleDeps <$> use GetDependencies file
 
 -- | Try to get hover text for the name under point.
-getAtPoint :: _ => NormalizedFilePath -> Position -> BasicM t m (Maybe (Maybe Range, [T.Text]))
-getAtPoint file pos = fmap join $ runMaybeT $ do
-  opts <-  MaybeT $ (noTrack getIdeOptions)
-  spans <- MaybeT $ useNoTrack GetSpanInfo file
+getAtPoint :: _ => NormalizedFilePath -> Position -> ActionM t m (Maybe (Maybe Range, [T.Text]))
+getAtPoint file pos = do
+  opts <-  getIdeOptions
+  spans <- use_ GetSpanInfo file
   return $ AtPoint.atPoint opts spans pos
 
 -- | Goto Definition.
-getDefinition :: _ => NormalizedFilePath -> Position -> BasicM  t m (Maybe Location)
-getDefinition file pos = fmap join $ noTrack $ fmap join $ runMaybeT $ do
-    opts <- lift $ getIdeOptions
-    spans <- MaybeT $ use GetSpanInfo file
-    lift $ AtPoint.gotoDefinition (getHieFile file) opts (spansExprs spans) pos
+getDefinition :: _ => NormalizedFilePath -> Position -> ActionM t m (Maybe Location)
+getDefinition file pos = do
+    opts <- getIdeOptions
+    spans <- use_ GetSpanInfo file
+    AtPoint.gotoDefinition (getHieFile file) opts (spansExprs spans) pos
 
 getHieFile
   :: _ => NormalizedFilePath -- ^ file we're editing
