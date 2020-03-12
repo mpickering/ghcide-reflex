@@ -459,7 +459,7 @@ getHiFileRule = defineEarlyCutoff GetHiFile $ \f -> do
   session <- hscEnv <$> use_ GhcSession f
   -- get all dependencies interface files, to check for freshness
   (deps,_)<- use_ GetLocatedImports f
-  depHis  <- traverse (use GetHiFile) (mapMaybe (fmap artifactFilePath . snd) deps)
+  depHis  <- uses GetHiFile (mapMaybe (fmap artifactFilePath . snd) deps)
 
   -- TODO find the hi file without relying on the parsed module
   --      it should be possible to construct a ModSummary parsing just the imports
