@@ -31,6 +31,7 @@ module Development.IDE.Core.Rules(
 
 import Fingerprint
 
+import Development.IDE.Types.Logger
 import qualified Data.HashMap.Strict as HMap
 import qualified Data.Map as Map
 import Language.Haskell.LSP.Types
@@ -303,11 +304,13 @@ rawDependencyInformation f = do
     dropBootSuffix (ModLocation (Just hs_src) _ _) = reverse . drop (length @[] "-boot") . reverse $ hs_src
     dropBootSuffix _ = error "dropBootSuffix"
 
+{-
 getDependencyInformationRule :: _ => WRule
 getDependencyInformationRule =
     define GetDependencyInformation $ \file -> do
        rawDepInfo <- rawDependencyInformation file
-       pure ([], Just $ processDependencyInformation rawDepInfo)
+       pure ([], Just $  rawDepInfo)
+       -}
 
 reportImportCyclesRule :: _ => WRule
 reportImportCyclesRule =
@@ -347,9 +350,10 @@ reportImportCyclesRule =
 getDependenciesRule :: _ => WRule
 getDependenciesRule =
     defineEarlyCutoff GetDependencies $ \file -> do
-        depInfo <- use_ GetDependencyInformation file
+--        depInfo <- use_ GetDependencyInformation file
+        depInfo <- processDependencyInformation <$> rawDependencyInformation file
         let allFiles = reachableModules depInfo
-        _ <- uses_ ReportImportCycles allFiles
+        --_ <- uses_ ReportImportCycles allFiles
         opts <- getIdeOptions
         let mbFingerprints = map (fingerprintString . fromNormalizedFilePath) allFiles <$ optShakeFiles opts
         return (fingerprintToBS . fingerprintFingerprints <$> mbFingerprints, ([], transitiveDeps depInfo file))
@@ -396,6 +400,7 @@ typeCheckRuleDefinition file = do
 --  setPriority priorityTypeCheck
   IdeOptions { optDefer = defer } <- getIdeOptions
 
+  logM Info ("Typechecking:" <> T.pack (show file))
   res <- liftIO $ typecheckModule defer hsc (zipWith unpack mirs bytecodes) pm
 
   case res of
@@ -456,7 +461,7 @@ getHiFileRule = defineEarlyCutoff GetHiFile $ \f -> do
   session <- hscEnv <$> use_ GhcSession f
   -- get all dependencies interface files, to check for freshness
   (deps,_)<- use_ GetLocatedImports f
-  depHis  <- uses GetHiFile (mapMaybe (fmap artifactFilePath . snd) deps)
+  deps <- uses_ GetHiFile (mapMaybe (fmap artifactFilePath . snd) deps)
 
   -- TODO find the hi file without relying on the parsed module
   --      it should be possible to construct a ModSummary parsing just the imports
@@ -468,7 +473,7 @@ getHiFileRule = defineEarlyCutoff GetHiFile $ \f -> do
                 _ -> ml_hi_file $ ms_location ms
       ms     = pm_mod_summary pm
 
-  case sequence depHis of
+  case Just deps of
     Nothing -> do
           let d = mkInterfaceFilesGenerationDiag f "Missing interface file dependencies"
           pure (Nothing, (d, Nothing))
@@ -568,7 +573,7 @@ mainRule :: Rules
 mainRule =
     [ getParsedModuleRule
     , getLocatedImportsRule
-    , getDependencyInformationRule
+--    , getDependencyInformationRule
     , reportImportCyclesRule
     , getDependenciesRule
     , typeCheckRule

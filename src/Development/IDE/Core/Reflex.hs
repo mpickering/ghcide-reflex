@@ -181,13 +181,15 @@ improvingResetableThunk  :: _ => Dynamic t (Thunk a) -> m (Dynamic t (Thunk a))
 improvingResetableThunk = scanDynMaybe id upd
   where
     -- ok, if you insist, write the new value
-    upd (Value a) _ = trace "UPDATING: New Value" $ Just (Value a)
+    upd (Value a) _ = --trace "UPDATING: New Value" $
+                      Just (Value a)
     -- Wait, once the trigger is pressed
-    upd Awaiting  (Seed {}) = trace "UPDATING: Awaiting" $ Just Awaiting
+    upd Awaiting  (Seed {}) = --trace "UPDATING: Awaiting" $
+                              Just Awaiting
     -- Allows the thunk to be reset to GC
 --    upd s@(Seed {}) _ = Just s
     -- NOPE
-    upd _ _ = trace "Not updating" $ Nothing
+    upd _ _ = Nothing
 
 newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Early (Thunk a)) }
 
@@ -223,7 +225,7 @@ data GlobalEnv t = GlobalEnv { globalEnv :: D.DMap GlobalType (GlobalVar t)
 logM :: _ => Priority -> T.Text -> m ()
 logM p s = do
   logger <- asks (ideLogger . global)
-  liftIO $ logPriority logger p s
+  liftIO $ void $ forkIO $ logPriority logger p s
 
 logEvent :: _ => Event t (Priority, T.Text) -> m ()
 logEvent e = do
@@ -300,7 +302,30 @@ data EType = DepTrigger (D.Some RuleType, NormalizedFilePath)
               | UserTrigger
       deriving Show
 
-type ActionM t m a = (ReaderT (REnv t) (MaybeT (EventWriterT t [EType] m)) a)
+-- This datatype partitions the events reported by an action into two
+-- types
+-- * A blocking dependency is one which MUST fire before we can made any
+-- more progress, so we wait for all blocking dependencies before trying
+-- again
+-- * A trigger dependency is a dependency which suceeded but should trigger
+-- recompilation.
+data DependencyType a = BlockDependency a
+                      | TriggerDependency a
+
+partitionDepTypes :: [DependencyType a]-> ([a], [a])
+partitionDepTypes = partitionEithers . map dToEither
+  where
+    dToEither (BlockDependency x) = Left x
+    dToEither (TriggerDependency x) = Right x
+
+
+--tellBlock :: _ => Event t EType -> ActionM t m ()
+tellBlock e = tellEventF (BlockDependency ((:[]) <$> e))
+
+--tellTrig :: _ => Event t EType -> ActionM t m ()
+tellTrig e = tellEventF (TriggerDependency ((:[]) <$> e))
+
+type ActionM t m a = (ReaderT (REnv t) (MaybeT (EventWriterT t DependencyType [EType] m)) a)
 
 type DynamicM t m a = (ReaderT (REnv t) m (Dynamic t a))
 
@@ -309,10 +334,6 @@ type BasicM t m a = (ReaderT (REnv t) m a)
 liftActionM :: Monad m => m a -> ActionM t m a
 liftActionM = lift . lift . lift
 
-lr1 :: Monad m => ActionM t m (Maybe a) -> ActionM t m a
-lr1 ac = do
-  r <- ac
-  lift $ MaybeT (return r)
 
 
 
@@ -480,10 +501,12 @@ mkModule genv rules_raw mm (D.Some sel) f = do
          -> m (DSum RuleType (MDynamic t), Event t DiagsInfo)
     rule (name :=> (WrappedEarlyActionWithTrigger act user_trig)) = mdo
         user_trig' <- ([UserTrigger] <$) <$> runReaderT (user_trig f) renv
-        let rebuild_trigger = (fmap (\e -> leftmost [user_trig', start_trigger, e]) deps)
-        act_trig <- Reflex.traceEvent ident <$> switchHoldPromptly start_trigger rebuild_trigger
-        pm <- performEvent (runEventWriterT (runMaybeT (flip runReaderT renv (act f))) <$! act_trig)
+        let rebuild_trigger = (fmap (\e -> leftmost [user_trig', start_trigger, e]) deps')
+        --act_trig <- Reflex.traceEvent ident <$> switchHoldPromptly start_trigger rebuild_trigger
+        act_trig <- switchHoldPromptly start_trigger rebuild_trigger
+        pm <- performAction renv (act f) act_trig
         let (act_res, deps) = splitE pm
+        let deps' = pushAlways mkDepTrigger deps
         (act_des_d, trigger) <- thunk act_res
         let start_trigger = [StartTrigger] <$ trigger
         let swap_tup ((a, (b, c))) = (b, (a, c))
@@ -492,8 +515,8 @@ mkModule genv rules_raw mm (D.Some sel) f = do
         early_res <- early (fmap joinThunk <$> res)
         diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated pm_diags))
         let ident = show f ++ ": " ++ gshow name
-        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
---        return ((name :=> MDynamic early_res), diags_with_mod)
+--        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
+        return ((name :=> MDynamic early_res), diags_with_mod)
 --
       where
         get_mod (vfs, ds) = do
@@ -503,8 +526,32 @@ mkModule genv rules_raw mm (D.Some sel) f = do
 
 
 
-
     renv = REnv genv mm
+
+
+runEvents = runEventWriterTWithComb
+
+mkDepTrigger :: _ => [DependencyType (Event t [EType])] -> m (Event t [EType])
+mkDepTrigger ds = do
+  let (blocks, trigs) = partitionDepTypes ds
+  -- Make the dynamic which only fires when all the blocking events have
+  -- fired
+  case blocks of
+    -- The fast case, otherwise we end up making a dynamic which never
+    -- updates.
+    [] -> return $ leftmost trigs
+    _ -> do
+      block_e <- waitEvents blocks
+
+      -- Create a behaviour which indicates when the blocking is finished to
+      -- use with gate
+      block_b <- hold False (True <$ block_e)
+
+      -- Trigger recompile, once all the blocks have updated if either blocking
+      -- or trigger events fire.
+      return $ (leftmost ((concat <$> block_e) : trigs))
+
+
 
 
 traceAction ident a = a
@@ -682,22 +729,31 @@ reportDiags renv e = do
       eventer <- askEventer
       liftIO $ eventer e
 
-sampleMaybe :: (Monad m
+use_ :: (Monad m
                , Reflex t
                , MonadIO m
                , MonadSample t m)
                  => RuleType a
                  -> NormalizedFilePath
                  -> ActionM t m a
-sampleMaybe sel fp = do
-  lr1 (use sel fp)
+use_ sel fp = do
+  r <- trigToBlock sel fp
+  lift $ MaybeT (return r)
 
-use_ = sampleMaybe
+--trigToBlock
+trigToBlock sel fp = do
+  (r, dep) <- (useX sel fp)
+  case r of
+    Just v -> lift $ lift $ tellTrig dep
+    Nothing -> lift $ lift $ tellBlock dep
+  return r
 
 uses_ :: _ => RuleType a
               -> [NormalizedFilePath]
               -> ActionM t m [a]
-uses_ sel fps = mapM (sampleMaybe sel) fps
+uses_ sel fps = do
+  ms <- mapM (trigToBlock sel) fps
+  lift $ MaybeT (return $ sequence ms)
 
 uses :: _ => RuleType a
              -> [NormalizedFilePath]
@@ -710,7 +766,6 @@ updatedThunk :: _ => Dynamic t (Early (Thunk a)) -> Event t (Early (Thunk a))
 updatedThunk  = ffilter (\(Early _ a) -> case a of
                                             Value {} -> True
                                             _ -> False ) . updated
-
 use :: (Monad m
        , Reflex t
        , MonadIO m
@@ -719,6 +774,30 @@ use :: (Monad m
          -> NormalizedFilePath
          -> ActionM t m (Maybe a)
 use sel fp = do
+  (res, e) <- useX sel fp
+  lift $ lift $ tellTrig e
+  return res
+
+useBlock :: (Monad m
+       , Reflex t
+       , MonadIO m
+       , MonadSample t m)
+         => RuleType a
+         -> NormalizedFilePath
+         -> ActionM t m (Maybe a)
+useBlock sel fp = do
+  (res, e) <- useX sel fp
+  lift $ lift $ tellBlock e
+  return res
+
+useX :: (Monad m
+       , Reflex t
+       , MonadIO m
+       , MonadSample t m)
+         => RuleType a
+         -> NormalizedFilePath
+         -> ActionM t m (Maybe a, Event t EType)
+useX sel fp = do
   m <- askModuleMap
   mm <- liftActionM $ sample (currentMap m)
   case M.lookup fp mm of
@@ -726,17 +805,14 @@ use sel fp = do
       d <- lift $ hoistMaybe (getMD <$> D.lookup sel (rules ms))
       -- Only trigger a rebuild if the dependency gets filled in with
       -- a value, not the seed to arising transition
-      lift $ lift $ tellEvent ([(DepTrigger (D.Some sel, fp))] <$! updatedThunk d)
-      liftActionM $ sampleThunk d
+      let dep_e = (DepTrigger (D.Some sel, fp)) <$! updatedThunk d
+      res <- liftActionM $ sampleThunk d
+      return (res, dep_e)
     Nothing -> do
-      liftIO $ traceEventIO "FAILED TO FIND"
-      -- TODO: This will trigger a lot of recompilation, should only file
-      -- when the update is for this module. Should use an incremental for
-      -- that I think.
       let check (PatchMap m) = M.member fp m
-      lift $ lift $ tellEvent ([MissingTrigger fp]  <$! ffilter check (updatedMap m))
+      let dep_e = (MissingTrigger fp  <$! ffilter check (updatedMap m))
       liftIO $ updateMap m [(D.Some sel, fp)]
-      return Nothing
+      return (Nothing, dep_e)
 
 useNoTrack :: _ =>  RuleType a -> NormalizedFilePath -> BasicM t m (Maybe a)
 useNoTrack sel fp = noTrack (use_ sel fp)
@@ -744,7 +820,7 @@ useNoTrack sel fp = noTrack (use_ sel fp)
 
 noTrack :: _ => ActionM t m a -> BasicM t m (Maybe a)
 noTrack act = ReaderT $ (\renv -> do
-                      let x = fst <$> runEventWriterT (runMaybeT (runReaderT act renv))
+                      let x = fst <$> runEvents (runMaybeT (runReaderT act renv))
                       x)
 
 liftBasic :: _ => BasicM t m a -> ActionM t m a
@@ -819,7 +895,8 @@ withResponse timeout wrap input f = mdo
              Nothing -> return never
   -- Run the action once, to either get the result or the dependencies we
   -- need to wait for.
-  e1 <- performEventB (go <$> input)
+  e1 <- add_dep_trigger <$> performEventB (go <$> input)
+
   -- A dynamic which holds the most recent request
   d  <- holdDyn Nothing (Just <$> e1)
   -- An event which fires when the dependency which failed for the most
@@ -829,7 +906,7 @@ withResponse timeout wrap input f = mdo
   -- When e2 fires, run the event again, the dependencies are now updated.
   -- It may fail again, so perhaps should combine the dependencies with e2
   -- recursively.
-  e3 <- performEventB (go <$> e2)
+  e3 <- add_dep_trigger <$> performEventB (go <$> e2)
   -- Now race e1 and e3 until one returns Just
   -- When e4 fires we reset e2 so we don't send duplicate responses.
   -- I don't think resetting d is necessary.
@@ -838,6 +915,10 @@ withResponse timeout wrap input f = mdo
   performEventB_ (output <$> (leftmost [formatOutput <$> e4, timer]))
 
   where
+    add_dep_trigger =  pushAlways (\(a, d, i) -> do
+                              d' <- mkDepTrigger d
+                              return (a, i <$ d', i)
+                             )
     check :: (Maybe a, b, c) -> Maybe (c, a)
     check (m, _, i) = (i,) <$> m
     getDeps (_, deps, _) = deps
@@ -845,7 +926,7 @@ withResponse timeout wrap input f = mdo
     go i@(LSP.RequestMessage t tid _ p) = do
       renv <- ask
       (mr, deps) <- lift $ runActionM (f p) renv
-      return (mr, i <$ deps, i)
+      return (mr, deps, i)
 
     mkFailure err (LSP.RequestMessage t tid _ p) =
       LSP.ResponseMessage t (LSP.responseId tid) Nothing (Just err)
@@ -870,7 +951,14 @@ withResponse timeout wrap input f = mdo
 
 
 
-runActionM act renv = (runEventWriterT (runMaybeT (flip runReaderT renv act)))
+runActionM act renv = (runEvents  (runMaybeT (flip runReaderT renv act)))
+
+--performAction :: REnv t -> Performable m a -> Event t () -> m (Event t (Maybe a, [
+performAction renv act act_trig =
+    performEvent eActions
+     where eActions = act' <$ act_trig
+           act' = (runEvents (runMaybeT (flip runReaderT renv act)))
+
 
 
 
@@ -1054,11 +1142,20 @@ filterVersionMap =
 getDiagnosticsFromStore :: StoreItem -> [Diagnostic]
 getDiagnosticsFromStore (StoreItem _ diags) = concatMap SL.fromSortedList $ M.elems diags
 
-{-
-waitEvents :: [Event t ()] -> Event t ()
-waitEvents es =
+-- Make an event which waits for all the events to fire before firing
+waitEvents :: _ => [Event t a] -> m (Event t [a])
+waitEvents es = do
   let num = length es
-  cd <- count (map headE es)
-  -}
-
+  -- Use headE so if an event fires multiple times it is not counted
+  -- multiple times
+  hs <- mapM headE es
+  -- Make a dynamic which counts and accumulates occurences
+  d <- --traceDyn ("waiting for" ++ show num) <$>
+        foldDyn (\as (n, res) -> (length as + n, as ++ res)) (0, [])
+          (mergeWithCheap' (:[]) (++) hs)
+  -- Now gate the Dynamic to only fire when n = num
+  -- Also apply headE for good measure as we know it will only fire once
+  let gate (n, as) | n == num = Just as
+                   | otherwise = Nothing
+  headE $ fmapMaybe gate (updated d)
 
