@@ -17,7 +17,7 @@ module Development.IDE.GHC.Compat(
     supportsHieFiles,
     setDefaultHieDir,
     dontWriteHieFiles,
-#if !MIN_GHC_API_VERSION(8,8,0)
+#if !MIN_GHC_API_VERSION(8,10,0)
     ml_hie_file,
 #endif
     hPutStringBuffer,
@@ -45,10 +45,10 @@ import FieldLabel
 import qualified Module
 
 import qualified GHC
-import GHC hiding (ClassOpSig, DerivD, ForD, IEThingAll, IEThingWith, InstD, TyClD, ValD, ModLocation)
+import GHC hiding (ClassOpSig, DerivD, ForD, IEThingAll, IEThingWith, InstD, TyClD, ValD, ModLocation, ml_hie_file)
 import Avail
 
-#if MIN_GHC_API_VERSION(8,8,0)
+#if MIN_GHC_API_VERSION(8,10,0)
 import Control.Applicative ((<|>))
 import Development.IDE.GHC.HieAst
 import HieBin
@@ -62,7 +62,7 @@ hieExportNames = nameListFromAvails . hie_exports
 
 #else
 
-#if MIN_GHC_API_VERSION(8,6,0)
+#if MIN_GHC_API_VERSION(8,8,0)
 import BinIface
 import Data.IORef
 import IfaceEnv
@@ -70,7 +70,7 @@ import IfaceEnv
 
 import Binary
 import Data.ByteString (ByteString)
-import GhcPlugins hiding (ModLocation)
+import GhcPlugins hiding (ModLocation, ml_hie_file)
 import NameCache
 import TcRnTypes
 import System.IO
@@ -78,10 +78,12 @@ import Foreign.ForeignPtr
 import MkIface
 
 
+{-
 hPutStringBuffer :: Handle -> StringBuffer -> IO ()
 hPutStringBuffer hdl (StringBuffer buf len cur)
     = withForeignPtr (plusForeignPtr buf cur) $ \ptr ->
              hPutBuf hdl ptr len
+             -}
 
 #endif
 
@@ -174,7 +176,7 @@ pattern IEThingAll a <-
 
 setDefaultHieDir :: FilePath -> DynFlags -> DynFlags
 setDefaultHieDir _f d =
-#if MIN_GHC_API_VERSION(8,8,0)
+#if MIN_GHC_API_VERSION(8,10,0)
     d { hieDir     = hieDir d <|> Just _f}
 #else
     d
@@ -182,7 +184,7 @@ setDefaultHieDir _f d =
 
 dontWriteHieFiles :: DynFlags -> DynFlags
 dontWriteHieFiles d =
-#if MIN_GHC_API_VERSION(8,8,0)
+#if MIN_GHC_API_VERSION(8,10,0)
     gopt_unset d Opt_WriteHie
 #else
     d
@@ -192,7 +194,7 @@ nameListFromAvails :: [AvailInfo] -> [(SrcSpan, Name)]
 nameListFromAvails as =
   map (\n -> (nameSrcSpan n, n)) (concatMap availNames as)
 
-#if !MIN_GHC_API_VERSION(8,8,0)
+#if !MIN_GHC_API_VERSION(8,10,0)
 -- Reimplementations of functions for HIE files for GHC 8.6
 
 mkHieFile :: ModSummary -> TcGblEnv -> RenamedSource -> ByteString -> Hsc HieFile
@@ -224,7 +226,7 @@ writeHieFile :: FilePath -> HieFile -> IO ()
 readHieFile :: NameCache -> FilePath -> IO (HieFileResult, ())
 supportsHieFiles :: Bool
 
-#if MIN_GHC_API_VERSION(8,6,0)
+#if MIN_GHC_API_VERSION(8,8,1)
 
 writeHieFile fp hie = do
   bh <- openBinMem (1024 * 1024)
