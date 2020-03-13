@@ -149,10 +149,13 @@ splitThunk a (Seed trig) = (a, Seed trig)
 thunk :: _ => Event t (Maybe a) -> m (Dynamic t (Thunk a), Event t ())
 thunk e  = do
   (start, grow) <- newTriggerEvent
-  -- Without this batching the program never terminates, and I don't know
-  -- why. The artificial delay seems to allow the events to propagate
-  -- correctly.
-  start' <- batchOccurrences 0.01 start
+  -- This headE is very important.
+  -- If you remove it then at the star of the program the event gets
+  -- triggered many times which leads to a lot of computation happening.
+  -- It used to be "batchOccurences" which worked somewhat but not on
+  -- a bigger code base like GHC. It is best to enforce that the start
+  -- event only fires once using headE.
+  start' <- headE start
   let trig = grow Awaiting
   d <- holdDyn (Seed trig) (leftmost [maybe Awaiting Value <$> e
                                                 , Awaiting <$ start' ])
@@ -274,7 +277,7 @@ mkModuleMap genv rules_raw input = mdo
 
   -- An event which is triggered to update the incremental
   (map_update, update_trigger) <- newTriggerEvent
-  map_update' <- fmap concat <$> batchOccurrences 0.01 map_update
+  map_update' <- fmap concat <$> batchOccurrences 0.1 map_update
   let mk_patch (fp, v) = v
       mkM (sel, fp) = (fp, Just (mkModule genv rules_raw mmu sel fp))
       mk_module fp act _ = mk_patch <$> act
@@ -502,8 +505,8 @@ mkModule genv rules_raw mm (D.Some sel) f = do
     rule (name :=> (WrappedEarlyActionWithTrigger act user_trig)) = mdo
         user_trig' <- ([UserTrigger] <$) <$> runReaderT (user_trig f) renv
         let rebuild_trigger = (fmap (\e -> leftmost [user_trig', start_trigger, e]) deps')
-        --act_trig <- Reflex.traceEvent ident <$> switchHoldPromptly start_trigger rebuild_trigger
-        act_trig <- switchHoldPromptly start_trigger rebuild_trigger
+        act_trig <- Reflex.traceEvent ident <$> switchHoldPromptly start_trigger rebuild_trigger
+        --act_trig <- switchHoldPromptly start_trigger rebuild_trigger
         pm <- performAction renv (act f) act_trig
         let (act_res, deps) = splitE pm
         let deps' = pushAlways mkDepTrigger deps
@@ -515,7 +518,7 @@ mkModule genv rules_raw mm (D.Some sel) f = do
         early_res <- early (fmap joinThunk <$> res)
         diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated pm_diags))
         let ident = show f ++ ": " ++ gshow name
---        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
+        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
         return ((name :=> MDynamic early_res), diags_with_mod)
 --
       where
