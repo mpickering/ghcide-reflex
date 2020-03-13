@@ -138,6 +138,7 @@ runLanguageServer options userHandlers onInitialConfig onConfigChange hs init_ca
             -- TODO: All this stuff is not currently used, need to
             -- hook it into the initialisation of handlers to deal with
             -- cancellation and so on.
+            {-
             _ <- flip forkFinally (const exitClientMsg) $ forever $ do
                 msg <- readChan clientMsgChan
                 case msg of
@@ -159,6 +160,7 @@ runLanguageServer options userHandlers onInitialConfig onConfigChange hs init_ca
                                     sendFunc $ wrapNewReq $ RequestMessage "2.0" reqId rm newReqParams
                     InitialParams x@RequestMessage{_id, _params} act -> do
                         act lspFuncs _params
+                        -}
             pure Nothing
 
         checkCancelled clearReqId waitForCancel lspFuncs@LSP.LspFuncs{..} wrap act msg _id _params k =

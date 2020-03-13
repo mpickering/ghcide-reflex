@@ -40,8 +40,6 @@ import Development.IDE.Core.FileStore
 import Reflex (holdDyn, mergeWith, foldDyn)
 import Data.Bifunctor (second)
 import Control.Monad.Extra
-import Control.Monad.Trans.Class
-import Control.Monad.Trans.Maybe
 import Development.IDE.Core.Compile
 import Development.IDE.Core.OfInterest
 import Development.IDE.Types.Options
@@ -49,7 +47,6 @@ import Development.IDE.Spans.Calculate
 import Development.IDE.Import.DependencyInformation
 import Development.IDE.Import.FindImports
 import           Development.IDE.Core.FileExists
-import           Development.IDE.Core.FileStore        (getFileContents)
 import           Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
 import Development.IDE.GHC.Compat hiding (parseModule, typecheckModule)
