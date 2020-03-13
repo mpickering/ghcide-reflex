@@ -505,8 +505,8 @@ mkModule genv rules_raw mm (D.Some sel) f = do
     rule (name :=> (WrappedEarlyActionWithTrigger act user_trig)) = mdo
         user_trig' <- ([UserTrigger] <$) <$> runReaderT (user_trig f) renv
         let rebuild_trigger = (fmap (\e -> leftmost [user_trig', start_trigger, e]) deps')
-        act_trig <- Reflex.traceEvent ident <$> switchHoldPromptly start_trigger rebuild_trigger
-        --act_trig <- switchHoldPromptly start_trigger rebuild_trigger
+--        act_trig <- Reflex.traceEvent ident <$> switchHoldPromptly start_trigger rebuild_trigger
+        act_trig <- switchHoldPromptly start_trigger rebuild_trigger
         pm <- performAction renv (act f) act_trig
         let (act_res, deps) = splitE pm
         let deps' = pushAlways mkDepTrigger deps
@@ -518,7 +518,7 @@ mkModule genv rules_raw mm (D.Some sel) f = do
         early_res <- early (fmap joinThunk <$> res)
         diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated pm_diags))
         let ident = show f ++ ": " ++ gshow name
-        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
+--        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
         return ((name :=> MDynamic early_res), diags_with_mod)
 --
       where

@@ -400,7 +400,7 @@ typeCheckRuleDefinition file = do
 --  setPriority priorityTypeCheck
   IdeOptions { optDefer = defer } <- getIdeOptions
 
---  logM Info ("Typechecking:" <> T.pack (show file))
+  logM Info ("Typechecking:" <> T.pack (show file))
   res <- liftIO $ typecheckModule defer hsc (zipWith unpack mirs bytecodes) pm
 
   case res of
