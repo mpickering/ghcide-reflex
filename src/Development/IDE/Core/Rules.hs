@@ -448,7 +448,7 @@ generateByteCodeRule =
 
 
 
-loadGhcSession :: _ => WRule
+loadGhcSession :: WRule
 loadGhcSession = do
     defineEarlyCutoff GhcSession $ \file -> do
         GhcSessionFun fun <- useNoFile_ GhcSessionIO
@@ -457,7 +457,7 @@ loadGhcSession = do
         opts <- getIdeOptions
         return (Nothing, ([], Just res))
 
-getHiFileRule :: _ => WRule
+getHiFileRule :: WRule
 getHiFileRule = defineEarlyCutoff GetHiFile $ \f -> do
   session <- hscEnv <$> use_ GhcSession f
   -- get all dependencies interface files, to check for freshness
@@ -508,7 +508,7 @@ mkInterfaceFilesGenerationDiag f intro = mkDiag $ intro <> msg
       msg = ": additional resource use while generating interface files in the background."
       mkDiag = pure . ideErrorWithSource (Just "interface file loading") (Just DsInfo) f . T.pack
 
-getModIfaceRule :: _ => WRule
+getModIfaceRule :: WRule
 getModIfaceRule = define GetModIface $ \f -> do
     fileOfInterest <- isFileOfInterest f
     let useHiFile =
@@ -533,7 +533,7 @@ getModIfaceRule = define GetModIface $ \f -> do
         -- Bang patterns are important to force the inner fields
         Just $! HiFileResult (tmrModSummary tmr) (hm_iface $ tmrModInfo tmr)
 
-initGlobal :: _ => WRule
+initGlobal :: WRule
 initGlobal =
   addIdeGlobal GetInitFuncs $ do
     e <- getInitEvent

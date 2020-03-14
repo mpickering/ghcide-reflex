@@ -47,7 +47,7 @@ import Data.HashSet (HashSet)
 import Data.HashMap.Strict (HashMap)
 import Control.Monad.Ref
 import Reflex.Host.Class
-import {-# SOURCE #-} Development.IDE.Core.Reflex
+import {-# SOURCE #-} Development.IDE.Core.Reflex.Rules
 import Control.Monad.IO.Class
 
 import qualified Language.Haskell.LSP.Messages as LSP

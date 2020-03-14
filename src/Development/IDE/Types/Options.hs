@@ -14,7 +14,7 @@ module Development.IDE.Types.Options
   , defaultIdeOptions
   ) where
 
-import {-# SOURCE #-} Development.IDE.Core.Reflex
+import {-# SOURCE #-} Development.IDE.Core.Reflex.Rules
 import Development.IDE.GHC.Util
 import           GHC hiding (parseModule, typecheckModule)
 import           GhcPlugins                     as GHC hiding (fst3, (<>))

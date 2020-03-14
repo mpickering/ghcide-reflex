@@ -117,6 +117,11 @@ library
         Development.IDE.Core.Reflex
         Development.IDE.Core.Reflex.Early
         Development.IDE.Core.Reflex.Thunk
+        Development.IDE.Core.Reflex.Logger
+        Development.IDE.Core.Reflex.Rules
+        Development.IDE.Core.Reflex.Service
+        Development.IDE.Core.Reflex.Diagnostics
+        Development.IDE.Core.Reflex.Constraints
         Development.IDE.GHC.Error
         Development.IDE.GHC.Util
         Development.IDE.Import.DependencyInformation

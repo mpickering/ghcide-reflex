@@ -29,6 +29,7 @@ import Data.Functor
 import Development.IDE.Types.Location
 import Development.IDE.Types.Logger
 import Development.IDE.Core.Reflex
+import Development.IDE.Core.Reflex.Logger
 import Development.IDE.Core.RuleTypes
 import Reflex
 import Language.Haskell.LSP.Core

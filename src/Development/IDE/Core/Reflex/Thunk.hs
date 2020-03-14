@@ -159,3 +159,8 @@ improvingResetableThunk = scanDynMaybe id upd
 --    upd s@(Seed {}) _ = Just s
     -- NOPE
     upd _ _ = Nothing
+
+updatedThunk :: _ => Dynamic t (Thunk a) -> Event t (Thunk a)
+updatedThunk  = ffilter (\a -> case a of
+                          Value {} -> True
+                          _ -> False ) . updated

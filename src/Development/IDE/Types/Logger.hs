@@ -52,3 +52,4 @@ logTelemetry x = logPriority x Telemetry
 
 noLogging :: Logger
 noLogging = Logger $ \_ _ -> return ()
+

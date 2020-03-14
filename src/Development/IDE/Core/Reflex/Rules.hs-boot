@@ -1,5 +1,5 @@
 {-# LANGUAGE RoleAnnotations #-}
-module Development.IDE.Core.Reflex where
+module Development.IDE.Core.Reflex.Rules where
 
 type role ForallAction nominal
 type role ForallDynamic nominal
