@@ -115,6 +115,8 @@ library
         Development.IDE.Core.Service
         Development.IDE.Core.Shake
         Development.IDE.Core.Reflex
+        Development.IDE.Core.Reflex.Early
+        Development.IDE.Core.Reflex.Thunk
         Development.IDE.GHC.Error
         Development.IDE.GHC.Util
         Development.IDE.Import.DependencyInformation

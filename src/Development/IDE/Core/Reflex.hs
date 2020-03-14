@@ -104,6 +104,9 @@ import qualified Language.Haskell.LSP.Types.Capabilities as LSP
 import Development.IDE.Types.Logger
 import Development.IDE.Core.Debouncer
 
+import Development.IDE.Core.Reflex.Thunk
+import Development.IDE.Core.Reflex.Early
+
 data IdeState = IdeState
 
 --data Priority = Priority Int
@@ -114,85 +117,8 @@ data HoverMap = HoverMap
 type Diagnostics = String
 type RMap t a = M.Map NormalizedFilePath (Dynamic t a)
 
--- Early cut off
-data Early a = Early (Maybe BS.ByteString) a
-
-unearly :: Early a -> a
-unearly (Early _ a) = a
-
-early :: _ => Dynamic t (Maybe BS.ByteString, a) -> m (Dynamic t (Early a))
-early d = scanDynMaybe (\(h, v) -> Early h v) upd d
-  where
-    -- Nothing means there's no hash, so always update
-    upd (Nothing, a) v = Just (Early Nothing a)
-    -- If there's already a hash, and we get a new hash then update
-    upd (Just h, new_a) (Early (Just h') _) = if h == h'
-                                                  then Nothing
-                                                  else (Just (Early (Just h) new_a))
-    -- No stored, hash, just update
-    upd (h, new_a) (Early Nothing _)   = Just (Early h new_a)
 
 
--- Like a Maybe, but has to be activated the first time we try to access it
-data Thunk a = Value a | Awaiting | Seed (IO ()) deriving Functor
-
-joinThunk :: Thunk (Maybe a) -> Thunk a
-joinThunk (Value m) = maybe Awaiting Value m
-joinThunk Awaiting = Awaiting
-joinThunk (Seed trig) = (Seed trig)
-
-splitThunk :: a -> Thunk (a, b)  -> (a, Thunk b)
-splitThunk _ (Value (l, a)) = (l, Value a)
-splitThunk a (Awaiting)  = (a, Awaiting)
-splitThunk a (Seed trig) = (a, Seed trig)
-
-thunk :: _ => Event t (Maybe a) -> m (Dynamic t (Thunk a), Event t ())
-thunk e  = do
-  (start, grow) <- newTriggerEvent
-  -- This headE is very important.
-  -- If you remove it then at the star of the program the event gets
-  -- triggered many times which leads to a lot of computation happening.
-  -- It used to be "batchOccurences" which worked somewhat but not on
-  -- a bigger code base like GHC. It is best to enforce that the start
-  -- event only fires once using headE.
-  start' <- headE start
-  let trig = grow Awaiting
-  d <- holdDyn (Seed trig) (leftmost [maybe Awaiting Value <$> e
-                                                , Awaiting <$ start' ])
-  -- Only allow the thunk to improve
-  d' <- improvingResetableThunk d
-  return (d', () <$ start')
-
-forceThunk :: _ => Dynamic t (Thunk a) -> m ()
-forceThunk d = do
-  t <- sample (current d)
-  case t of
-    Seed start -> liftIO start
-    _ -> return ()
-
-sampleThunk :: _ => Dynamic t (Early (Thunk a)) -> m (Maybe a)
-sampleThunk d = do
-  t <- sample (current (unearly <$> d))
-  case t of
-    Seed start -> liftIO start >> return Nothing
-    Awaiting   -> return Nothing
-    Value a    -> return (Just a)
-
-
--- Like improvingMaybe, but for the Thunk type
-improvingResetableThunk  :: _ => Dynamic t (Thunk a) -> m (Dynamic t (Thunk a))
-improvingResetableThunk = scanDynMaybe id upd
-  where
-    -- ok, if you insist, write the new value
-    upd (Value a) _ = --trace "UPDATING: New Value" $
-                      Just (Value a)
-    -- Wait, once the trigger is pressed
-    upd Awaiting  (Seed {}) = --trace "UPDATING: Awaiting" $
-                              Just Awaiting
-    -- Allows the thunk to be reset to GC
---    upd s@(Seed {}) _ = Just s
-    -- NOPE
-    upd _ _ = Nothing
 
 newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Early (Thunk a)) }
 
@@ -809,7 +735,7 @@ useX sel fp = do
       -- Only trigger a rebuild if the dependency gets filled in with
       -- a value, not the seed to arising transition
       let dep_e = (DepTrigger (D.Some sel, fp)) <$! updatedThunk d
-      res <- liftActionM $ sampleThunk d
+      res <- liftActionM $ sampleThunk (unearly <$> d)
       return (res, dep_e)
     Nothing -> do
       let check (PatchMap m) = M.member fp m

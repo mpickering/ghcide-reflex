@@ -116,6 +116,7 @@ getAtPoint :: _ => NormalizedFilePath -> Position -> ActionM t m (Maybe (Maybe R
 getAtPoint file pos = do
   opts <-  getIdeOptions
   spans <- use_ GetSpanInfo file
+  logM Info ("SPANS:" <> T.pack (show (length (spansExprs spans))))
   return $ AtPoint.atPoint opts spans pos
 
 -- | Goto Definition.
