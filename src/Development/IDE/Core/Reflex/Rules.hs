@@ -19,89 +19,35 @@
 {-# LANGUAGE UndecidableInstances #-}
 module Development.IDE.Core.Reflex.Rules where
 
-import qualified Data.HashSet as HS
 import qualified Data.List.NonEmpty as NL
 --import {-# SOURCE #-} Language.Haskell.Core.FileStore (getModificationTime)
-import Language.Haskell.LSP.VFS
-import Language.Haskell.LSP.Diagnostics
-import qualified Data.SortedList as SL
-import qualified Data.Text as T
-import Data.List
-import qualified Data.HashMap.Strict as HMap
 import Control.Monad.Fix
-import Data.Functor
-import Data.Functor.Barbie
-import Data.Functor.Product
 import Language.Haskell.LSP.Core
-import Data.Kind
 import Reflex.Host.Class
 import qualified Data.ByteString.Char8 as BS
 import Development.IDE.Core.RuleTypes
-import Control.Monad.Extra
 import Control.Monad.Reader
 import Data.GADT.Show
-import Data.GADT.Compare.TH
-import Data.GADT.Show.TH
 import Control.Error.Util
 import qualified Data.Dependent.Map as D
 import Data.Dependent.Map (DMap, DSum(..))
-import Data.These(These(..))
 import Reflex.Time
-import Reflex.Network
 import System.Directory
 import Reflex
-import GHC hiding (parseModule, mkModule, typecheckModule, getSession)
-import qualified GHC
-import Reflex.PerformEvent.Class
-import Development.IDE.Core.Compile
-import Data.Default
-import Control.Monad.IO.Class
 import Development.IDE.Types.Location
-import StringBuffer
-import Development.IDE.Types.Options
-import Data.Dependent.Map (GCompare)
-import Data.GADT.Compare
 import qualified Data.Map as M
-import Unsafe.Coerce
 import Reflex.Host.Basic
-import Development.IDE.Import.FindImports
-import Control.Monad
-import HscTypes
 import Data.Either
 import Control.Monad.Trans.Maybe
-import Control.Monad.Trans
-import Module hiding (mkModule)
-import qualified Data.Set as Set
-import Data.Maybe
-import Control.Monad.State.Strict
 import Development.IDE.Types.Diagnostics
-import Development.IDE.Import.DependencyInformation
-import qualified Data.IntMap as IntMap
-import qualified Data.IntSet as IntSet
-import Data.Coerce
-import Data.Traversable
-import qualified GHC.LanguageExtensions as LangExt
-import DynFlags
-import Development.IDE.Spans.Type
-import Development.IDE.Spans.Calculate
---import HIE.Bios
---import HIE.Bios.Environment
-import System.Environment
-import System.IO
-import Linker
---import qualified GHC.Paths
-import Control.Concurrent
-import Reflex.Profiled
-import Debug.Trace
-import Control.Monad.Ref
-import Reflex.Host.Class
+--import Debug.Trace
 import Data.Time.Clock
+import HscTypes
 
 import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP
-import qualified Language.Haskell.LSP.Types.Capabilities as LSP
 import Development.IDE.Types.Logger
-import Development.IDE.Core.Debouncer
+import Development.IDE.Types.Options
 
 import Development.IDE.Core.Reflex.Thunk
 import Development.IDE.Core.Reflex.Early
@@ -199,14 +145,17 @@ partitionDepTypes = partitionEithers . map dToEither
     dToEither (TriggerDependency x) = Right x
 
 
-tellBlock :: _ => Event t EType -> ActionM t m ()
+tellBlock :: (Reflex t, Monad m) => Event t EType -> ActionM t m ()
 tellBlock e = lift $ lift $ tellEventF (BlockDependency ((:[]) <$> e))
 
-tellTrig :: _ => Event t EType -> ActionM t m ()
+tellTrig :: (Reflex t, Monad m) => Event t EType -> ActionM t m ()
 tellTrig e = lift $ lift  $ tellEventF (TriggerDependency ((:[]) <$> e))
 
 type ActionM t m a = (ReaderT (REnv t) (MaybeT (EventWriterT t DependencyType [EType] m)) a)
 
+runActionM :: (Reflex t, Monad m) =>
+                    ReaderT r1 (MaybeT (EventWriterT t f r2 m)) a
+                    -> r1 -> m (Maybe a, [f (Event t r2)])
 runActionM act renv = (runEvents  (runMaybeT (flip runReaderT renv act)))
 
 type DynamicM t m a = (ReaderT (REnv t) m (Dynamic t a))
@@ -272,7 +221,13 @@ data ModuleMapWithUpdater t =
     , updateMap :: [(D.Some RuleType, NormalizedFilePath)] -> IO ()
     }
 
+currentMap :: Reflex t =>
+                    ModuleMapWithUpdater t
+                    -> Behavior t (M.Map NormalizedFilePath (ModuleState t))
 currentMap = currentIncremental . getMap
+updatedMap :: Reflex t =>
+                    ModuleMapWithUpdater t
+                    -> Event t (PatchMap NormalizedFilePath (ModuleState t))
 updatedMap = updatedIncremental . getMap
 
 
@@ -288,16 +243,21 @@ type ShakeDefinition m t = Definition RuleType (WrappedEarlyActionWithTrigger m)
 type GlobalDefinition m t = Definition GlobalType (WrappedDynamicM m) t
 
 
+runEvents :: (Reflex t, Monad m) =>
+                   EventWriterT t f r m a -> m (a, [f (Event t r)])
 runEvents = runEventWriterTWithComb
 
 --
 
-traceAction ident a = a
+traceAction :: MonadIO m => [Char] -> m a -> m a
+traceAction _ident a = a
+{-
 traceAction ident a = do
   liftIO $ traceEventIO ("START:" ++ ident)
   r <- a
   liftIO $ traceEventIO ("END:" ++ ident)
   return r
+  -}
 
 use_ :: (Monad m
        , Reflex t
@@ -312,18 +272,19 @@ use_ sel fp = do
 
 -- If the result is present then return a trigger otherwise report
 -- a blocker.
-trigToBlock :: _ => RuleType a -> NormalizedFilePath -> ActionM t m (Maybe a)
+trigToBlock :: (Reflex t, MonadIO m, MonadSample t m)
+              => RuleType a -> NormalizedFilePath -> ActionM t m (Maybe a)
 trigToBlock sel fp = do
   (r, dep) <- (useX sel fp)
   case r of
-    Just v -> tellTrig dep
+    Just _v -> tellTrig dep
     Nothing -> tellBlock dep
   return r
 
 -- It is important that uses_ is not implemented in terms of use_ as MaybeT
 -- short circuits. We want to try all the files in the list so that we can
 -- suitably block for all of the events at once rather than one at a time.
-uses_ :: _ => RuleType a
+uses_ :: (Reflex t, MonadIO m, MonadSample t m) => RuleType a
               -> [NormalizedFilePath]
               -> ActionM t m [a]
 uses_ sel fps = do
@@ -333,11 +294,13 @@ uses_ sel fps = do
 
 -- Uses doens't need to be implememented specially because it will just
 -- return trigger events.
-uses :: _ => RuleType a
+uses :: (Reflex t, MonadIO m, MonadSample t m) => RuleType a
              -> [NormalizedFilePath]
              -> ActionM t m [Maybe a]
 uses sel fps = mapM (use sel) fps
 
+useWithStale :: (Reflex t, MonadIO m, MonadSample t m) =>
+                      RuleType a -> NormalizedFilePath -> ActionM t m (Maybe a)
 useWithStale = use
 
 use :: (Monad m
@@ -391,73 +354,80 @@ useX sel fp = do
       liftIO $ updateMap m [(D.Some sel, fp)]
       return (Nothing, dep_e)
 
-useNoTrack :: _ =>  RuleType a -> NormalizedFilePath -> BasicM t m (Maybe a)
+useNoTrack :: (Reflex t, MonadIO m, MonadSample t m) =>  RuleType a -> NormalizedFilePath -> BasicM t m (Maybe a)
 useNoTrack sel fp = noTrack (use_ sel fp)
 
-noTrack :: _ => ActionM t m a -> BasicM t m (Maybe a)
+noTrack :: (Reflex t, Monad m) => ActionM t m a -> BasicM t m (Maybe a)
 noTrack act = ReaderT $ (\renv -> do
                       let x = fst <$> runEvents (runMaybeT (runReaderT act renv))
                       x)
 
-liftBasic :: _ => BasicM t m a -> ActionM t m a
+liftBasic :: Monad m => BasicM t m a -> ActionM t m a
 liftBasic act = do
   renv <- ask
   liftActionM (runReaderT act renv)
 
-useNoFile_ :: _ => GlobalType a
+useNoFile_ :: (Reflex t, MonadSample t m) => GlobalType a
            -> ActionM t m a
 useNoFile_ sel = useNoFile sel
 
-useNoFile :: _ => GlobalType a
+useNoFile :: (Reflex t, MonadSample t m) => GlobalType a
           -> ActionM t m a
 
 useNoFile sel = do
   m <- globalEnv <$> askGlobal
   liftActionM $ sample (current $ dyn $ D.findWithDefault (error $ "MISSING RULE:" ++ gshow sel) sel m)
 
-useNoFileBasic :: _ => GlobalType a
+useNoFileBasic :: (Reflex t, MonadSample t m)
+          => GlobalType a
           -> BasicM t m a
 
 useNoFileBasic sel = do
   v <- getGlobalVar sel
   lift $ sample (current (dyn v))
 
+getHandlerEvent :: MonadReader (REnv t) f =>
+                         (GlobalHandlers t -> b) -> f b
 getHandlerEvent sel = do
   sel . handlers <$> askGlobal
 
+getInitEvent :: MonadReader (REnv t) f => f (Event t InitParams)
 getInitEvent = do
   init_e <$> askGlobal
 
 
 -- Don't turn on an event until the init event has happened
-waitInit :: _ => Event t a -> m (Event t a)
+waitInit :: (MonadReader (REnv t) m, Reflex t, MonadHold t m)
+          => Event t a -> m (Event t a)
 waitInit e = do
   init_e <- getInitEvent
   switchHold never (e <$ init_e)
 
-getGlobalVar :: _ => GlobalType a -> BasicM t m (GlobalVar t a)
+getGlobalVar :: Monad m => GlobalType a -> BasicM t m (GlobalVar t a)
 getGlobalVar sel = do
   m <- globalEnv <$> askGlobal
   return $ D.findWithDefault (error $ "MISSING RULE:" ++ gshow sel) sel m
 
 
-withNotification :: _ => Event t (LSP.NotificationMessage m a) -> Event t a
+withNotification :: Reflex t => Event t (LSP.NotificationMessage m a) -> Event t a
 withNotification = fmap (\(LSP.NotificationMessage _ _ a) -> a)
 
-performEventB :: _ => Event t (BasicM t (Performable m) a) -> BasicM t m (Event t a)
+performEventB :: PerformEvent t m => Event t (BasicM t (Performable m) a) -> BasicM t m (Event t a)
 performEventB b = do
   renv <- ask
   let run = flip runReaderT renv <$> b
   lift $ performEvent run
 
 
-performEventB_ :: _ => Event t (BasicM t (Performable m) ()) -> BasicM t m ()
+performEventB_ :: PerformEvent t m => Event t (BasicM t (Performable m) ()) -> BasicM t m ()
 performEventB_ b = do
   renv <- ask
   let run = flip runReaderT renv <$> b
   lift $ performEvent_ run
 
-withResponse :: _ =>
+withResponse :: (PerformEvent t m, TriggerEvent t m,
+                       MonadIO (Performable m), MonadHold t m,
+                       MonadSample t (Performable m), MonadFix m) =>
                 Maybe (NominalDiffTime, resp)
              -> (LSP.ResponseMessage resp -> LSP.FromServerMessage)
              -> Event t (LSP.RequestMessage cm params resp)
@@ -499,18 +469,18 @@ withResponse timeout wrap input f = mdo
     check (m, _, i) = (i,) <$> m
     getDeps (_, deps, _) = deps
 --    go :: LSP.RequestMessage cm params resp -> BasicM t m LSP.FromServerMessage
-    go i@(LSP.RequestMessage t tid _ p) = do
+    go i@(LSP.RequestMessage _t _tid _ p) = do
       renv <- ask
       (mr, deps) <- lift $ runActionM (f p) renv
       return (mr, deps, i)
 
-    mkFailure err (LSP.RequestMessage t tid _ p) =
+    mkFailure err (LSP.RequestMessage t tid _ _p) =
       LSP.ResponseMessage t (LSP.responseId tid) Nothing (Just err)
 
-    mkSuccess r (LSP.RequestMessage t tid _ p) =
+    mkSuccess r (LSP.RequestMessage t tid _ _p) =
       LSP.ResponseMessage t (LSP.responseId tid) (Just r) Nothing
 
-    formatOutput (req@(LSP.RequestMessage t tid _ p), r) =
+    formatOutput (req, r) =
       case r of
           Left err -> mkFailure err req
           Right r -> mkSuccess r req
@@ -528,7 +498,8 @@ withResponse timeout wrap input f = mdo
 -- Given a list of dependency events, create an event which fires when
 -- * Any of the trigger events fire
 -- * All of the blocking events have fired.
-mkDepTrigger :: _ => [DependencyType (Event t [EType])] -> m (Event t [EType])
+mkDepTrigger :: (Reflex t, MonadHold t m, MonadFix m)
+              => [DependencyType (Event t [EType])] -> m (Event t [EType])
 mkDepTrigger ds = do
   let (blocks, trigs) = partitionDepTypes ds
   -- Make the dynamic which only fires when all the blocking events have
@@ -542,7 +513,9 @@ mkDepTrigger ds = do
 
       -- Create a behaviour which indicates when the blocking is finished to
       -- use with gate
-      block_b <- hold False (True <$ block_e)
+      -- Not sure why using this with gate doesn't work, perhaps use
+      -- ffilter instead?
+      --block_b <- hold False (True <$ block_e)
 
       -- Trigger recompile, once all the blocks have updated if either blocking
       -- or trigger events fire.
@@ -550,7 +523,8 @@ mkDepTrigger ds = do
 
 
 -- Make an event which waits for all the events to fire before firing
-waitEvents :: _ => [Event t a] -> m (Event t [a])
+waitEvents :: (Reflex t, MonadHold t m, MonadFix m)
+            => [Event t a] -> m (Event t [a])
 waitEvents es = do
   let num = length es
   -- Use headE so if an event fires multiple times it is not counted
@@ -567,6 +541,11 @@ waitEvents es = do
   headE $ fmapMaybe gate (updated d)
 
 --performAction :: REnv t -> Performable m a -> Event t () -> m (Event t (Maybe a, [
+performAction :: (Reflex t1, PerformEvent t2 m) =>
+                       r1
+                       -> ReaderT r1 (MaybeT (EventWriterT t1 f r2 (Performable m))) a
+                       -> Event t2 b
+                       -> m (Event t2 (Maybe a, [f (Event t1 r2)]))
 performAction renv act act_trig =
     performEvent eActions
      where eActions = act' <$ act_trig
@@ -580,19 +559,31 @@ whenUriFile uri def act = maybe def (act . toNormalizedFilePath) (LSP.uriToFileP
 
 
 
-
+(<$!) :: Functor f => b -> f t -> f b
 (<$!) v fa = fmap (\a -> a `seq` v) fa
 
+getIdeOptions :: (Reflex t, MonadSample t m) =>
+                       ActionM t m IdeOptions
 getIdeOptions = useNoFile_ GetIdeOptions
+
+getSession :: (Reflex t, MonadSample t m) =>
+                    ActionM t m HscEnv
 getSession = useNoFile_ GetEnv
 
+askModuleMap :: MonadReader (REnv t) m =>
+                      m (ModuleMapWithUpdater t)
 askModuleMap = asks (module_map)
+
+askGlobal :: MonadReader (REnv t) m => m (GlobalEnv t)
 askGlobal = asks global
 
+askEventer :: (Reflex t, MonadSample t m) =>
+                    ReaderT (REnv t) m (LSP.FromServerMessage -> IO ())
 askEventer = do
   (_, _, _, eventer) <- useNoFileBasic GetInitFuncs
   return eventer
 
+doesExist :: MonadIO m => NormalizedFilePath -> m Bool
 doesExist nfp = let fp = fromNormalizedFilePath nfp in liftIO $ doesFileExist fp
 
 
@@ -672,6 +663,9 @@ instance MonadIO (BasicGuestWrapper t) where
 
 instance TriggerEvent t (BasicGuestWrapper t) where
   newTriggerEvent = BasicGuestWrapper newTriggerEvent
+  newTriggerEventWithOnComplete = BasicGuestWrapper newTriggerEventWithOnComplete
+  newEventWithLazyTriggerWithOnComplete f = BasicGuestWrapper (newEventWithLazyTriggerWithOnComplete f)
+
 
 instance (Monad (HostFrame t), Reflex t) => PerformEvent t (BasicGuestWrapper t) where
     type Performable (BasicGuestWrapper t) = HostFrame t

@@ -781,6 +781,7 @@ modificationTime :: FileVersion -> Maybe (Int, Int)
 modificationTime VFSVersion{} = Nothing
 modificationTime (ModificationTime large small) = Just (large, small)
 
+getDiagnosticsFromStore :: StoreItem -> [Diagnostic]
 getDiagnosticsFromStore (StoreItem _ diags) = concatMap SL.fromSortedList $ Map.elems diags
 
 

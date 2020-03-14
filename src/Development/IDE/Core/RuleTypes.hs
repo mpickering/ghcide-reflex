@@ -24,7 +24,6 @@ import Development.IDE.GHC.Util
 import           Data.Hashable
 import           Data.Typeable
 import qualified Data.Set as S
-import           Development.Shake
 import           GHC.Generics                             (Generic)
 import Development.IDE.Core.PositionMapping
 
@@ -38,17 +37,12 @@ import Data.GADT.Compare.TH
 import Development.IDE.Types.Options
 import Data.GADT.Show.TH
 
-import Language.Haskell.LSP.Core
 import Language.Haskell.LSP.VFS
 import qualified Data.Text as T
-import Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Location
 import Data.HashSet (HashSet)
 import Data.HashMap.Strict (HashMap)
-import Control.Monad.Ref
-import Reflex.Host.Class
 import {-# SOURCE #-} Development.IDE.Core.Reflex.Rules
-import Control.Monad.IO.Class
 
 import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP

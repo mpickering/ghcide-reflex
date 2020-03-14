@@ -18,22 +18,17 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 module Development.IDE.Core.Reflex(
-          module Development.IDE.Core.Reflex
-          , module Development.IDE.Core.Reflex.Rules
+            module Development.IDE.Core.Reflex.Rules
           , module Development.IDE.Core.Reflex.Service
           , module Development.IDE.Core.Reflex.Logger
           , HostFrame
-          , reflexOpen) where
+          ) where
 
 
 import Reflex.Host.Class
 
-import Development.IDE.Core.Reflex.Thunk
 import Development.IDE.Core.Reflex.Rules
-import Development.IDE.Core.Reflex.Early
 import Development.IDE.Core.Reflex.Logger
-import Development.IDE.Core.Reflex.Diagnostics
-import Development.IDE.Core.Reflex.Constraints
 import Development.IDE.Core.Reflex.Service
 
 
