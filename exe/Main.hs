@@ -14,14 +14,10 @@ import qualified Data.Map as M
 import qualified Data.Dependent.Map as D
 import Reflex
 import Arguments
-import Data.Binary (Binary)
-import Data.Dynamic (Typeable)
-import Data.Hashable (Hashable)
 import Data.Maybe
 import Data.List.Extra
 import System.FilePath
 import Control.Concurrent.Extra
-import Control.DeepSeq (NFData)
 import Control.Exception
 import Control.Monad.Extra
 import Control.Monad.IO.Class
@@ -29,10 +25,8 @@ import qualified Crypto.Hash.SHA1 as H
 import qualified Data.ByteString.Char8 as B
 import Data.ByteString.Base16
 import Data.Default
-import System.Time.Extra
 import Development.IDE.Core.Debouncer
 import Development.IDE.Core.FileStore
-import Development.IDE.Core.OfInterest
 import Development.IDE.Core.Service
 import Development.IDE.Core.Rules
 import Development.IDE.Core.Reflex hiding (getSession)
@@ -43,9 +37,9 @@ import Development.IDE.Types.Diagnostics
 import Development.IDE.Types.Options
 import Development.IDE.Types.Logger
 import Development.IDE.GHC.Util
-import Development.IDE.Plugin
-import Development.IDE.Plugin.Completions as Completions
-import Development.IDE.Plugin.CodeAction as CodeAction
+--import Development.IDE.Plugin
+--import Development.IDE.Plugin.Completions as Completions
+--import Development.IDE.Plugin.CodeAction as CodeAction
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Language.Haskell.LSP.Messages
@@ -60,19 +54,17 @@ import System.Exit
 import Paths_ghcide
 import Development.GitRev
 --import Development.Shake (Action, RuleResult, Rules, action, doesFileExist, need)
-import qualified Data.HashSet as HashSet
 import qualified Data.Map.Strict as Map
 
 import GHC hiding (def)
-import GHC.Generics (Generic)
 import qualified GHC.Paths
 import           DynFlags
 
 import HIE.Bios.Environment
 import HIE.Bios
-import HIE.Bios.Cradle
+--import HIE.Bios.Cradle
 import HIE.Bios.Types
-import Development.IDE.Core.Service
+--import Development.IDE.Core.Service
 
 -- Prefix for the cache path
 cacheDir :: String
@@ -118,12 +110,12 @@ main = do
 
     dir <- IO.getCurrentDirectory
 
-    let plugins = Completions.plugin <> CodeAction.plugin
+    let --plugins = Completions.plugin <> CodeAction.plugin
         onInitialConfiguration = const $ Right ()
         onConfigurationChange  = const $ Right ()
 
     if argLSP then do
-        t <- offsetTime
+--        t <- offsetTime
         hPutStrLn stderr "Starting LSP server..."
         hPutStrLn stderr "If you are seeing this in a terminal, you probably should have run ghcide WITHOUT the --lsp option!"
 
@@ -162,7 +154,7 @@ main = do
         let cradlesToSessions = Map.fromList $ zip ucradles sessions
         let filesToCradles = Map.fromList $ zip files cradles
 
-        let grab :: _ => FilePath -> ActionM t m HscEnvEq
+        let grab :: Monad m => FilePath -> ActionM t m HscEnvEq
             grab file = return $ fromMaybe (head sessions) $ do
                 cradle <- Map.lookup file filesToCradles
                 Map.lookup cradle cradlesToSessions
@@ -178,7 +170,7 @@ main = do
                 --setFilesOfInterest ide $ HashSet.fromList $ map toNormalizedFilePath files
                 let typecheck fp = open (D.Some GetTypecheckedModule
                                         , toNormalizedFilePath fp)
-                results <- liftIO $ mapM_ typecheck files
+                liftIO $ mapM_ typecheck files
                 {-
                 let (worked, failed) = partition fst $ zip (map isJust results) files
                 when (failed /= []) $
@@ -204,11 +196,6 @@ expandFiles = concatMapM $ \x -> do
             fail $ "Couldn't find any .hs/.lhs files inside directory: " ++ x
         return files
 
-
-kick :: _ => ActionM t m ()
-kick = do
-    files <- getFilesOfInterest
-    void $ uses GetTypecheckedModule $ HashSet.toList files
 
 -- | Print an LSP event.
 showEvent :: Lock -> FromServerMessage -> IO ()
@@ -241,7 +228,8 @@ loadGhcSessionIO =
         return $ (\m -> SessionMap m cradleLoc trig) <$> md]
 
 
-getGhcSession :: _ => FilePath -> FilePath -> ActionM t m HscEnvEq
+getGhcSession :: (Reflex t, MonadIO m, MonadSample t m)
+                => FilePath -> FilePath -> ActionM t m HscEnvEq
 getGhcSession dir file = do
   (SessionMap m cl t) <- useNoFile_ $ GetHscEnv
   nfp <- liftIO $ cl file
