@@ -58,10 +58,10 @@ ofInterestVar =
 
 
 
-getFilesOfInterest :: _ => ActionM t m (HashSet NormalizedFilePath)
+getFilesOfInterest :: (Reflex t, MonadSample t m) => ActionM t m (HashSet NormalizedFilePath)
 getFilesOfInterest = useNoFile_ OfInterestVar
 
-isFileOfInterest :: _ => NormalizedFilePath -> ActionM t m Bool
+isFileOfInterest :: (Reflex t, MonadSample t m) => NormalizedFilePath -> ActionM t m Bool
 isFileOfInterest fp = S.member fp <$> getFilesOfInterest
 
 
