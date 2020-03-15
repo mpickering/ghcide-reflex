@@ -12,24 +12,12 @@ module Development.IDE.Core.OfInterest(
     ofInterestRules, getFilesOfInterest, isFileOfInterest
     ) where
 
-import Control.Concurrent.Extra
-import Data.Binary
-import Data.Hashable
-import Control.DeepSeq
-import GHC.Generics
-import Data.Typeable
-import qualified Data.ByteString.UTF8 as BS
-import Control.Exception
 import Data.HashSet (HashSet)
 import qualified Data.HashSet as S
-import qualified Data.Text as T
-import Data.Tuple.Extra
-import Data.Functor
 
 import Development.IDE.Types.Location
 import Development.IDE.Types.Logger
 import Development.IDE.Core.Reflex
-import Development.IDE.Core.Reflex.Logger
 import Development.IDE.Core.RuleTypes
 import Reflex
 import Language.Haskell.LSP.Core

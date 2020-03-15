@@ -2,13 +2,13 @@
 module Development.IDE.Plugin(Plugin(..)) where
 
 import Data.Default
-import Development.IDE.LSP.Server
+--import Development.IDE.LSP.Server
 import Development.IDE.Core.Reflex
 
-import           Language.Haskell.LSP.Types
-import Development.IDE.Core.Rules
-import qualified Language.Haskell.LSP.Core as LSP
-import Language.Haskell.LSP.Messages
+--import           Language.Haskell.LSP.Types
+--import Development.IDE.Core.Rules
+--import qualified Language.Haskell.LSP.Core as LSP
+--import Language.Haskell.LSP.Messages
 
 
 data Plugin c = Plugin

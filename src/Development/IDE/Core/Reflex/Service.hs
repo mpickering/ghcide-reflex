@@ -17,6 +17,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 module Development.IDE.Core.Reflex.Service( reflexOpen ) where
 
 
@@ -31,7 +32,6 @@ import Language.Haskell.LSP.Core
 import Development.IDE.Core.RuleTypes
 import Control.Monad.Extra
 import Control.Monad.Reader
-import Data.GADT.Show
 import qualified Data.Dependent.Map as D
 import Data.Dependent.Map (DSum(..))
 import Reflex.Time
@@ -41,7 +41,7 @@ import Development.IDE.Types.Location
 import Development.IDE.Types.Options
 import qualified Data.Map as M
 import Reflex.Host.Basic
-import Debug.Trace
+--import Debug.Trace
 
 import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP
@@ -109,7 +109,7 @@ reflexOpen logger _debouncer _opts startServer init_rules = do
     let ForallBasic start = startServer hs init_trigger input_trigger
     unwrapBG $ flip runReaderT renv $ do
                 start
-                sequence unitActions
+                sequence_ unitActions
 
     return never
 
@@ -161,7 +161,7 @@ mkModuleMap genv rules_raw input = mdo
 
 -- Create the state for one module, this is the key function in the whole
 -- implementation.
-mkModule :: forall t m . (MonadIO m, PerformEvent t m, TriggerEvent t m, Monad m, Reflex t, MonadFix m, _) =>
+mkModule :: forall t m . (MonadIO m, PerformEvent t m, TriggerEvent t m, Monad m, Reflex t, MonadFix m, MonadHold t m, MonadIO (Performable m)) =>
                  GlobalEnv t
               -> [ShakeDefinition m t]
               -> ModuleMapWithUpdater t
@@ -193,7 +193,7 @@ mkModule genv rules_raw mm (D.Some sel) f = do
     -- rule
     -- * The "start" trigger is called when the thunk is initially forced
     -- * If any of the dependencies change
-    rule :: _ => ShakeDefinition m t
+    rule :: ShakeDefinition m t
          -> m (DSum RuleType (MDynamic t), Event t DiagsInfo)
     rule (name :=> (WrappedEarlyActionWithTrigger act user_trig)) = mdo
         --
@@ -221,7 +221,7 @@ mkModule genv rules_raw mm (D.Some sel) f = do
         early_res <- early (fmap joinThunk <$> res)
         -- Attach the file version and rule name to the diagnostics
         diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated pm_diags))
-        let ident = show f ++ ": " ++ gshow name
+--        let ident = show f ++ ": " ++ gshow name
 --        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
         return ((name :=> MDynamic early_res), diags_with_mod)
 --
@@ -234,7 +234,7 @@ mkModule genv rules_raw mm (D.Some sel) f = do
 
     renv = REnv genv mm
 
-traceDynE p d = traceDynWith (const $ Debug.Trace.traceEvent p p) d
+--traceDynE p d = traceDynWith (const $ Debug.Trace.traceEvent p p) d
 
 
 
@@ -245,7 +245,8 @@ instance FunctorB HandlersG where
 
 
 -- Make the handlers and events which fire when a handler fires
-mkHandlers :: forall m t . _ => m (Handlers, GlobalHandlers t)
+mkHandlers :: forall m t . (TriggerEvent t m, Reflex t)
+            => m (Handlers, GlobalHandlers t)
 mkHandlers = do
   res <- btraverseC @Show go h
   let (hs, gs) = bunzip res
@@ -264,11 +265,17 @@ mkHandlers = do
 
 -- This use of (++) could be really inefficient, probably a better way to
 -- do it
-collectDiags :: _ => (M.Map NormalizedFilePath (ModuleState t)) -> Event t (NL.NonEmpty DiagsInfo)
+collectDiags :: Reflex t => (M.Map NormalizedFilePath (ModuleState t))
+              -> Event t (NL.NonEmpty DiagsInfo)
 collectDiags m = mergeWith (<>) $ map diags (M.elems m)
 
 -- | Output the diagnostics, with a 0.1s debouncer
-reportDiags :: _ => _ -> Event t _ -> m ()
+reportDiags :: (PerformEvent t m, TriggerEvent t m, Foldable f,
+                       MonadIO (Performable m), MonadHold t m, MonadFix m,
+                       MonadSample t (Performable m))
+             => REnv t
+             -> Event t (f (NormalizedUri, [LSP.Diagnostic]))
+             -> m ()
 reportDiags renv e = do
   e' <- debounce 0.1 e
   performEvent_ (mapM_ (flip runReaderT renv . putEvent . render) <$> e')
@@ -282,7 +289,8 @@ reportDiags renv e = do
 
 -- Trigger a typecheck of all the files of interest when the OfInterest
 -- var changes.
-triggerTypecheck :: _ => BasicM t m ()
+triggerTypecheck :: (PerformEvent t m, MonadIO (Performable m),
+                       MonadSample t (Performable m)) => BasicM t m ()
 triggerTypecheck = do
   ofInterest <- getGlobalVar OfInterestVar
   env <- ask

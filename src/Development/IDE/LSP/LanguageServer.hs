@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: Apache-2.0
 
 {-# LANGUAGE ExistentialQuantification  #-}
+{-# OPTIONS_GHC -w #-}
 
 -- WARNING: A copy of DA.Daml.LanguageServer, try to keep them in sync
 -- This version removes the daml: handling
@@ -21,7 +22,7 @@ import Control.Concurrent.Extra
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception.Safe
-import Data.Default
+--import Data.Default
 import Data.Maybe
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -29,11 +30,6 @@ import GHC.IO.Handle (hDuplicate)
 import System.IO
 import Control.Monad.Extra
 
-import Development.IDE.Core.IdeConfiguration
---import Development.IDE.LSP.HoverDefinition
---import Development.IDE.LSP.Notifications
-import Development.IDE.LSP.Outline
-import Development.IDE.Types.Logger
 import Development.IDE.Core.FileStore
 import Language.Haskell.LSP.Core
 import Language.Haskell.LSP.Messages
@@ -47,7 +43,7 @@ runLanguageServer
     -> Handlers -- ^ A complete set of handlers which trigger events
     -> ((VFSHandle, ClientCapabilities, IO LspId, (FromServerMessage -> IO ())) -> IO ())
     -> IO ()
-runLanguageServer options userHandlers onInitialConfig onConfigChange hs init_callback = do
+runLanguageServer options _userHandlers onInitialConfig onConfigChange hs init_callback = do
     -- Move stdout to another file descriptor and duplicate stderr
     -- to stdout. This guards against stray prints from corrupting the JSON-RPC
     -- message stream.

@@ -73,8 +73,8 @@ import Data.ByteString (ByteString)
 import GhcPlugins hiding (ModLocation, ml_hie_file)
 import NameCache
 import TcRnTypes
-import System.IO
-import Foreign.ForeignPtr
+--import System.IO
+--import Foreign.ForeignPtr
 import MkIface
 
 

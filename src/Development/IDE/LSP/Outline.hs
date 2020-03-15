@@ -1,6 +1,8 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE PartialTypeSignatures #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GADTs #-}
 #include "ghc-api-version.h"
 
 module Development.IDE.LSP.Outline
@@ -20,6 +22,7 @@ import           Data.Text                      ( Text
 import qualified Data.Text                     as T
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Reflex
+import           Development.IDE.Core.Reflex.Constraints
 import           Development.IDE.GHC.Compat
 import           Development.IDE.GHC.Error      ( srcSpanToRange )
 import           Development.IDE.Types.Location
@@ -36,7 +39,7 @@ outlineRule = unitAction $ do
   withResponse Nothing RspDocumentSymbols e moduleOutline
 
 moduleOutline
-  :: _ => DocumentSymbolParams -> ActionM t m (Either ResponseError DSResult)
+  :: C t => DocumentSymbolParams -> ActionM t (HostFrame t) (Either ResponseError DSResult)
 moduleOutline DocumentSymbolParams { _textDocument = TextDocumentIdentifier uri }
   = case uriToFilePath uri of
     Just (toNormalizedFilePath -> fp) -> do

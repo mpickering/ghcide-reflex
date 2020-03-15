@@ -1,5 +1,5 @@
 {-# LANGUAGE TypeFamilies #-}
-
+{-# OPTIONS_GHC -w #-}
 module Development.IDE.Plugin.Completions(plugin) where
 
 import Language.Haskell.LSP.Messages

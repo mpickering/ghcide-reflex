@@ -20,17 +20,12 @@ module Development.IDE.Core.Service( initialise
     -}
     ) where
 
-import           Control.Concurrent.Extra
-import           Control.Concurrent.Async
-import Data.Maybe
 import Development.IDE.Types.Options (IdeOptions(..))
-import Control.Monad
 import Development.IDE.Core.Debouncer
-import           Development.IDE.Core.FileStore  (VFSHandle, fileStoreRules)
-import           Development.IDE.Core.FileExists (fileExistsRules)
+import           Development.IDE.Core.FileStore  (fileStoreRules)
+--import           Development.IDE.Core.FileExists (fileExistsRules)
 import           Development.IDE.Core.OfInterest
 import Development.IDE.Types.Logger
-import Data.Either.Extra
 import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP
 import qualified Language.Haskell.LSP.Types.Capabilities as LSP
@@ -41,14 +36,11 @@ import           Development.IDE.Core.RuleTypes
 import Language.Haskell.LSP.Core
 import Development.IDE.Types.Location
 import Reflex
-import Control.Monad.Trans
 import qualified Data.Dependent.Map as D
 import Development.IDE.Core.IdeConfiguration
 import Development.IDE.LSP.Outline
 
 
-
-newtype GlobalIdeOptions = GlobalIdeOptions IdeOptions
 
 ------------------------------------------------------------
 -- Exposed API

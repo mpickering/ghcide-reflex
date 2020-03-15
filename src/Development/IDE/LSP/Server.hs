@@ -14,8 +14,6 @@ import Data.Default
 import           Language.Haskell.LSP.Types
 import qualified Language.Haskell.LSP.Core as LSP
 import qualified Language.Haskell.LSP.Messages as LSP
-import Development.IDE.Core.Service
-import Development.IDE.Core.Reflex
 
 data WithMessage c = WithMessage
     {withResponse :: forall m req resp . (Show m, Show req) =>

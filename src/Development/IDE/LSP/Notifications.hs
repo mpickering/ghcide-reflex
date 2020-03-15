@@ -5,27 +5,14 @@
 {-# LANGUAGE RankNTypes            #-}
 
 module Development.IDE.LSP.Notifications
-    ( --setHandlersNotifications
+    ( logNotifications
     ) where
 
 import qualified Language.Haskell.LSP.Core        as LSP
 import           Language.Haskell.LSP.Types
-import qualified Language.Haskell.LSP.Types       as LSP
 
-import           Development.IDE.Core.IdeConfiguration
-import           Development.IDE.Core.Service
-import           Development.IDE.Types.Location
 import           Development.IDE.Types.Logger
 
-import           Control.Monad.Extra
-import           Data.Foldable                    as F
-import           Data.Maybe
-import qualified Data.HashSet                     as S
-import qualified Data.Text                        as Text
-
---import           Development.IDE.Core.FileStore   (setSomethingModified)
---import           Development.IDE.Core.FileExists  (modifyFileExists)
-import           Development.IDE.Core.OfInterest
 import Development.IDE.Core.Reflex
 import Reflex
 
@@ -42,12 +29,12 @@ logNotifications = unitAction $ do
           ]
   where
       checkOpen (DidOpenTextDocumentParams TextDocumentItem{_uri, _version}) =
-        whenUriFile _uri Nothing $ \file ->
+        whenUriFile _uri Nothing $ \_file ->
           Just ("Opened text document: " <> getUri _uri)
 
 
       checkClose (DidCloseTextDocumentParams TextDocumentIdentifier{_uri}) =
-        whenUriFile _uri Nothing $ \file ->
+        whenUriFile _uri Nothing $ \_file ->
           Just ("Closed text document:" <> getUri _uri)
 
 {-
