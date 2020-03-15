@@ -1,11 +1,22 @@
-packages: . haskell-lsp/ /home/matt/reflex
+packages: .
 
-profiling: True
+profiling: False
 
 allow-newer: reflex-basic-host:all
+
 
 source-repository-package
     type: git
     location:https://github.com/WebGHC/dependent-sum.git
     subdir: dependent-sum-template
     tag: 5158a7dc5e714ca82e94c76ceec838ad85b0efab
+
+source-repository-package
+    type: git
+    location:https://github.com/mpickering/reflex.git
+    tag: a82849b6e764af66af2b10ea32661a3af8384ed7
+
+source-repository-package
+    type: git
+    location:https://github.com/mpickering/haskell-lsp.git
+    tag: 5a4cc243d8b33a25d89f3458baa0441936d3fc5b
