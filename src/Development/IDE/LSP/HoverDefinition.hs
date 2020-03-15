@@ -14,15 +14,22 @@ import           Development.IDE.Core.Reflex
 --import           Development.IDE.Core.Service
 --import           Development.IDE.LSP.Server
 import           Development.IDE.Types.Location
-import           Development.IDE.Types.Logger
+--import           Development.IDE.Types.Logger
 import qualified Language.Haskell.LSP.Core       as LSP
 import           Language.Haskell.LSP.Messages
 import           Language.Haskell.LSP.Types
+import Reflex
+import Control.Monad.IO.Class
+
 
 import qualified Data.Text as T
 
-gotoDefinition :: _ => TextDocumentPositionParams -> ActionM t m (Either ResponseError LocationResponseParams)
-hover          :: _ => TextDocumentPositionParams -> ActionM t m (Either ResponseError (Maybe Hover))
+gotoDefinition :: (Reflex t, MonadIO m, MonadSample t m)
+                => TextDocumentPositionParams
+                -> ActionM t m (Either ResponseError LocationResponseParams)
+hover          :: (Reflex t, MonadIO m, MonadSample t m)
+                => TextDocumentPositionParams
+                -> ActionM t m (Either ResponseError (Maybe Hover))
 gotoDefinition = request "Definition" getDefinition (MultiLoc []) SingleLoc
 hover          = request "Hover"      getAtPoint     Nothing      foundHover
 
@@ -40,7 +47,7 @@ goToDefinitionRule :: WRule
 goToDefinitionRule = unitAction $ do
   goto_e <- getHandlerEvent LSP.definitionHandler
   e <- waitInit goto_e
-  withResponse (Just (1, MultiLoc [])) RspDefinition goto_e gotoDefinition
+  withResponse (Just (1, MultiLoc [])) RspDefinition e gotoDefinition
 
 {-
 setHandlersDefinition, setHandlersHover :: PartialHandlers c
@@ -52,7 +59,7 @@ setHandlersHover      = PartialHandlers $ \WithMessage{..} x ->
 
 -- | Respond to and log a hover or go-to-definition request
 request
-  :: _ => T.Text
+  :: (Monad m) => T.Text
   -> (NormalizedFilePath -> Position -> ActionM t m (Maybe a))
   -> b
   -> (a -> b)
@@ -64,8 +71,8 @@ request label getResults notFound found (TextDocumentPositionParams (TextDocumen
         Nothing   -> pure Nothing
     pure $ Right $ maybe notFound found mbResult
 
-logAndRunRequest :: _ => T.Text -> (NormalizedFilePath -> Position -> ActionM t m b)  -> Position -> String -> ActionM t m b
-logAndRunRequest label getResults pos path = do
+logAndRunRequest :: T.Text -> (NormalizedFilePath -> Position -> ActionM t m b)  -> Position -> String -> ActionM t m b
+logAndRunRequest _label getResults pos path = do
   let filePath = toNormalizedFilePath path
 --  logInfo (ideLogger ide) $
 --    label <> " request at position " <> T.pack (showPosition pos) <>

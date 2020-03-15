@@ -22,11 +22,8 @@ import Development.IDE.GHC.Orphans()
 import           Development.IDE.Core.Reflex
 import Control.Concurrent.Extra
 import qualified Data.Map.Strict as Map
-import Data.Maybe
 import qualified Data.Text as T
-import           Control.Monad.Extra
 import           Control.Exception
-import           GHC.Generics
 import Data.Either.Extra
 import System.IO.Error
 import qualified Data.ByteString.Char8 as BS
@@ -133,7 +130,9 @@ foreign import ccall "getmodtime" c_getModTime :: CString -> Ptr CTime -> Ptr CL
 -- I think
 -- TODO: Also trigger on DidChangeWatchedFileParams events
 -- but need to make that an incremental rather than dynamic really
-getFileContentsTrigger :: _ => NormalizedFilePath -> BasicM t m (Event t ())
+getFileContentsTrigger :: (Reflex t, Monad m)
+                        => NormalizedFilePath
+                        -> BasicM t m (Event t ())
 getFileContentsTrigger fp = do
   open <- ffilter handleOpen . withNotification <$> (getHandlerEvent didOpenTextDocumentNotificationHandler)
   change <- ffilter handleChange . withNotification <$> (getHandlerEvent didChangeTextDocumentNotificationHandler)
@@ -145,7 +144,7 @@ getFileContentsTrigger fp = do
       handleOpen ((DidOpenTextDocumentParams TextDocumentItem{_uri,_version}))
         = fromUri (toNormalizedUri _uri) == fp
 
-      handleChange (DidChangeTextDocumentParams identifier@VersionedTextDocumentIdentifier{_uri} changes)
+      handleChange (DidChangeTextDocumentParams VersionedTextDocumentIdentifier{_uri} _changes)
         = fromUri (toNormalizedUri _uri) == fp
 
       handleSave (DidSaveTextDocumentParams TextDocumentIdentifier{_uri})
@@ -174,7 +173,9 @@ ideTryIOException fp act =
       <$> try act
 
 
-getFileContents :: _ => NormalizedFilePath -> ActionM t m (FileVersion, Maybe T.Text)
+getFileContents :: (Reflex t, MonadIO m, MonadSample t m)
+                  => NormalizedFilePath
+                  -> ActionM t m (FileVersion, Maybe T.Text)
 getFileContents = use_ GetFileContents
 
 fileStoreRules :: Rules
@@ -183,6 +184,7 @@ fileStoreRules =
     , getFileContentsRule ]
     --getModificationTimeRule vfs
 
+vfsGlobal :: WRule
 vfsGlobal =
   (addIdeGlobal GetVFSHandle $ do
         e <- fmap (\(v, _,_,_) -> v) <$> getInitEvent

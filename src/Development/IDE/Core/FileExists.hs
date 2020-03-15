@@ -10,13 +10,9 @@ module Development.IDE.Core.FileExists
 where
 
 import           Data.Foldable                    as F
-import           Control.Concurrent.Extra
 import           Control.Exception
 import           Control.Monad.Extra
 import qualified Data.Aeson                    as A
-import           Data.Binary
-import qualified Data.ByteString               as BS
-import Data.HashMap.Strict (HashMap)
 import qualified Data.HashMap.Strict as HashMap
 import           Data.Maybe
 import qualified Data.Text                     as T
@@ -24,8 +20,6 @@ import           Development.IDE.Core.FileStore
 import           Development.IDE.Core.IdeConfiguration
 import           Development.IDE.Core.Reflex
 import           Development.IDE.Types.Location
-import           GHC.Generics
-import           Language.Haskell.LSP.Messages
 import           Language.Haskell.LSP.Types
 import           Language.Haskell.LSP.Types.Capabilities
 import qualified System.Directory as Dir
@@ -33,12 +27,12 @@ import Control.Monad.IO.Class
 import Development.IDE.Core.RuleTypes
 import Language.Haskell.LSP.Core
 import Development.IDE.Types.Logger
-import Reflex (foldDyn)
+import Reflex (Reflex, MonadSample, foldDyn)
 
 
 -- | A wrapper around a mutable 'FileExistsMap'
 -- | Grab the current global value of 'FileExistsMap' without acquiring a dependency
-getFileExistsMapUntracked :: _ => ActionM t m FileExistsMap
+getFileExistsMapUntracked :: (Reflex t, MonadSample t m) => ActionM t m FileExistsMap
 getFileExistsMapUntracked = do
   useNoFile_ FileExistsMapVar
 
@@ -74,7 +68,8 @@ modifyFileExists state changes = do
 --     2. The editor creates a new buffer @B.hs@
 --        Unless the editor also sends a @DidChangeWatchedFile@ event, ghcide will not pick it up
 --        Most editors, e.g. VSCode, only send the event when the file is saved to disk.
-getFileExists :: _ => NormalizedFilePath -> ActionM t m Bool
+getFileExists :: (Reflex t, MonadIO m, MonadSample t m)
+                => NormalizedFilePath -> ActionM t m Bool
 getFileExists fp = do
   (v, c, f, _) <- useNoFile GetInitFuncs
   getFileExistsImpl f c v fp
@@ -84,7 +79,12 @@ getFileExists fp = do
 -- | Installs the 'getFileExists' rules.
 --   Provides a fast implementation if client supports dynamic watched files.
 --   Creates a global state as a side effect in that case.
-getFileExistsImpl :: _ => IO LspId -> ClientCapabilities -> VFSHandle -> NormalizedFilePath -> ActionM t m Bool
+getFileExistsImpl :: (Reflex t, MonadIO m, MonadSample t m)
+                    => IO LspId
+                    -> ClientCapabilities
+                    -> VFSHandle
+                    -> NormalizedFilePath
+                    -> ActionM t m Bool
 getFileExistsImpl getLspId ClientCapabilities{_workspace} vfs nfp
   | Just WorkspaceClientCapabilities{_didChangeWatchedFiles} <- _workspace
   , Just DidChangeWatchedFilesClientCapabilities{_dynamicRegistration} <- _didChangeWatchedFiles
@@ -95,7 +95,7 @@ getFileExistsImpl getLspId ClientCapabilities{_workspace} vfs nfp
 fileExistsRules :: Rules
 fileExistsRules = [fileExistsVar]
 
-fileExistsVar :: _ => WRule
+fileExistsVar :: WRule
 fileExistsVar = addIdeGlobal FileExistsMapVar $ do
   ce <- withNotification <$> getHandlerEvent didChangeWatchedFilesNotificationHandler
   updates <- logAction Info (go <$> ce)
@@ -112,13 +112,21 @@ fileExistsVar = addIdeGlobal FileExistsMapVar $ do
         in (HashMap.fromList es, "Files created or deleted:" <> msg)
 
 --   Requires an lsp client that provides WatchedFiles notifications.
-fileExistsRulesFast :: _ => IO LspId -> VFSHandle -> NormalizedFilePath -> ActionM t m Bool
+fileExistsRulesFast :: (Reflex t, MonadIO m, MonadSample t m)
+                      => IO LspId
+                      -> VFSHandle
+                      -> NormalizedFilePath
+                      -> ActionM t m Bool
 fileExistsRulesFast getLspId vfs file = do
   isWf <- isWorkspaceFile file
   if isWf then fileExistsFast getLspId vfs file else fileExistsSlow file
 
-fileExistsFast :: _ => IO LspId -> VFSHandle -> NormalizedFilePath -> ActionM t m Bool
-fileExistsFast getLspId vfs file = do
+fileExistsFast :: (Reflex t, MonadIO m, MonadSample t m)
+                => IO LspId
+                -> VFSHandle
+                -> NormalizedFilePath
+                -> ActionM t m Bool
+fileExistsFast _getLspId vfs file = do
     fileExistsMap <- getFileExistsMapUntracked
     let mbFilesWatched = HashMap.lookup file fileExistsMap
     case mbFilesWatched of
@@ -144,6 +152,7 @@ fileExistsFast getLspId vfs file = do
 
         pure exist
  where
+   {-
   addListener eventer fp = do
     reqId <- getLspId
     let
@@ -160,9 +169,7 @@ fileExistsFast getLspId vfs file = do
                                   }
 
     eventer $ ReqRegisterCapability req
-
-summarizeExists :: Bool -> Maybe BS.ByteString
-summarizeExists x = Just $ if x then BS.singleton 1 else BS.empty
+    -}
 
 {-
 fileExistsRulesSlow:: VFSHandle -> WRule
@@ -177,7 +184,9 @@ fileExistsSlow vfs file = do
 
 -}
 
-fileExistsSlow :: _ => NormalizedFilePath -> ActionM t m Bool
+fileExistsSlow :: (Reflex t, MonadIO m, MonadSample t m)
+                => NormalizedFilePath
+                -> ActionM t m Bool
 fileExistsSlow f = do
   h <- useNoFile_ GetVFSHandle
   liftIO $ getFileExistsVFS h f

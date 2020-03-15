@@ -7,8 +7,6 @@ import Reflex
 import qualified Data.Text as T
 import Control.Concurrent
 import Control.Monad.Reader
-import Control.Monad
-import Control.Monad.IO.Class
 
 {- Logging -}
 

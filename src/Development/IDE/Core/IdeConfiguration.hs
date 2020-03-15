@@ -9,12 +9,10 @@ module Development.IDE.Core.IdeConfiguration
   )
 where
 
-import           Control.Concurrent.Extra
-import           Control.Monad
-import           Data.HashSet                   (HashSet, singleton)
+import           Data.HashSet                   (singleton)
 import qualified Data.HashSet as S
 import           Data.Text                      (Text, isPrefixOf)
-import           Development.IDE.Core.Reflex hiding (singleton)
+import           Development.IDE.Core.Reflex
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Types.Location
 import           Language.Haskell.LSP.Types
@@ -22,7 +20,7 @@ import           Language.Haskell.LSP.Core
 import Reflex
 import Control.Monad.Trans
 
-ideConfigurationRule :: _ => WRule
+ideConfigurationRule :: WRule
 ideConfigurationRule = addIdeGlobal IdeConfigurationVar $ do
   e <- getHandlerEvent didChangeWorkspaceFoldersNotificationHandler
   lift $ foldDyn (\i e -> modifyIdeConfig (go i) e) (IdeConfiguration S.empty) e
@@ -39,7 +37,7 @@ ideConfigurationRule = addIdeGlobal IdeConfigurationVar $ do
             modifyWorkspaceFolders ide
               -}
 
-getIdeConfiguration :: _ => ActionM t m IdeConfiguration
+getIdeConfiguration :: (Reflex t, MonadSample t m) => ActionM t m IdeConfiguration
 getIdeConfiguration =
   useNoFile_ IdeConfigurationVar
 --  getIdeGlobalAction >>= liftIO . readVar . unIdeConfigurationRef
@@ -67,7 +65,7 @@ modifyWorkspaceFolders ide f = do
   writeVar var (IdeConfiguration (f ws))
   -}
 
-isWorkspaceFile :: _ => NormalizedFilePath -> ActionM t m Bool
+isWorkspaceFile :: (Reflex t, MonadSample t m) => NormalizedFilePath -> ActionM t m Bool
 isWorkspaceFile file = do
   IdeConfiguration {..} <- getIdeConfiguration
   let toText = getUri . fromNormalizedUri

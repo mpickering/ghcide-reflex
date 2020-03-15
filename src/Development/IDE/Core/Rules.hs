@@ -38,7 +38,6 @@ import Language.Haskell.LSP.Types
 import Language.Haskell.LSP.Core
 import Development.IDE.Core.PositionMapping
 import Development.IDE.Core.FileStore
-import Reflex (holdDyn, mergeWith, foldDyn)
 import Data.Bifunctor (second)
 import Control.Monad.Extra
 import Development.IDE.Core.Compile
@@ -73,6 +72,7 @@ import Control.Monad.IO.Class
 import qualified GHC.LanguageExtensions as LangExt
 import HscTypes
 import DynFlags (xopt)
+import Reflex hiding (mapMaybe)
 --import GHC.Generics(Generic)
 
 import qualified Development.IDE.Spans.AtPoint as AtPoint
@@ -108,11 +108,16 @@ defineNoFile f = define k $ \file -> do
 
 -- | Get all transitive file dependencies of a given module.
 -- Does not include the file itself.
-getDependencies :: _ => NormalizedFilePath -> ActionM t m (Maybe [NormalizedFilePath])
+getDependencies :: (Reflex t, MonadIO m, MonadSample t m)
+                  => NormalizedFilePath
+                  -> ActionM t m (Maybe [NormalizedFilePath])
 getDependencies file = fmap transitiveModuleDeps <$> use GetDependencies file
 
 -- | Try to get hover text for the name under point.
-getAtPoint :: _ => NormalizedFilePath -> Position -> ActionM t m (Maybe (Maybe Range, [T.Text]))
+getAtPoint :: (MonadIO m, Reflex t, MonadSample t m)
+            => NormalizedFilePath
+            -> Position
+            -> ActionM t m (Maybe (Maybe Range, [T.Text]))
 getAtPoint file pos = do
   opts <-  getIdeOptions
   spans <- use_ GetSpanInfo file
@@ -120,16 +125,18 @@ getAtPoint file pos = do
   return $ AtPoint.atPoint opts spans pos
 
 -- | Goto Definition.
-getDefinition :: _ => NormalizedFilePath -> Position -> ActionM t m (Maybe Location)
+getDefinition :: (Reflex t, MonadIO m, MonadSample t m)
+               => NormalizedFilePath -> Position -> ActionM t m (Maybe Location)
 getDefinition file pos = do
     opts <- getIdeOptions
     spans <- use_ GetSpanInfo file
     AtPoint.gotoDefinition (getHieFile file) opts (spansExprs spans) pos
 
 getHieFile
-  :: _ => NormalizedFilePath -- ^ file we're editing
-  -> Module -- ^ module dep we want info for
-  -> ActionM t m (Maybe (HieFile, FilePath)) -- ^ hie stuff for the module
+  :: (Reflex t, MonadIO m, MonadSample t m)
+    => NormalizedFilePath -- ^ file we're editing
+    -> Module -- ^ module dep we want info for
+    -> ActionM t m (Maybe (HieFile, FilePath)) -- ^ hie stuff for the module
 getHieFile file mod = do
   TransitiveDependencies {transitiveNamedModuleDeps} <- use_ GetDependencies file
   case find (\x -> nmdModuleName x == moduleName mod) transitiveNamedModuleDeps of
@@ -140,7 +147,9 @@ getHieFile file mod = do
     _ -> getPackageHieFile mod file
 
 
-getHomeHieFile :: _ => NormalizedFilePath -> ActionM t m ([a], Maybe HieFile)
+getHomeHieFile :: (Reflex t, MonadIO m, MonadSample t m)
+                => NormalizedFilePath
+                -> ActionM t m ([a], Maybe HieFile)
 getHomeHieFile f = do
   pm <- use_ GetParsedModule f
   let normal_hie_f = toNormalizedFilePath hie_f
@@ -158,6 +167,8 @@ getHomeHieFile f = do
   hf <- liftIO $ if isUpToDate then Just <$> loadHieFile hie_f else pure Nothing
   return ([], hf)
 
+getModificationTimeM :: (Reflex t, MonadIO m, MonadSample t m)
+                      => NormalizedFilePath -> ActionM t m FileVersion
 getModificationTimeM f = do
   vfs <- useNoFile_ GetVFSHandle
   (_mb, (_ds, r)) <- getModificationTime vfs f
@@ -165,7 +176,7 @@ getModificationTimeM f = do
     Just v -> return v
     Nothing -> fail  "NOTING"
 
-getPackageHieFile :: _ => Module             -- ^ Package Module to load .hie file for
+getPackageHieFile :: (Reflex t, MonadIO m, MonadSample t m) => Module             -- ^ Package Module to load .hie file for
                   -> NormalizedFilePath -- ^ Path of home module importing the package module
                   -> ActionM t m (Maybe (HieFile, FilePath))
 getPackageHieFile mod file = do
@@ -186,7 +197,7 @@ getPackageHieFile mod file = do
         _ -> return Nothing
 
 -- | Parse the contents of a daml file.
-getParsedModule :: _ => NormalizedFilePath -> ActionM t m (Maybe ParsedModule)
+getParsedModule :: (Reflex t, MonadIO m, MonadSample t m) => NormalizedFilePath -> ActionM t m (Maybe ParsedModule)
 getParsedModule file = use GetParsedModule file
 
 ------------------------------------------------------------
@@ -204,7 +215,7 @@ priorityFilesOfInterest :: Priority
 priorityFilesOfInterest = Priority (-2)
 -}
 
-getParsedModuleRule :: _ => WRule
+getParsedModuleRule :: WRule
 getParsedModuleRule =
     defineEarlyCutoff GetParsedModule $ \file -> do
         (_, contents) <- getFileContents file
@@ -219,7 +230,7 @@ getParsedModuleRule =
                     else liftIO $ Just . fingerprintToBS <$> fingerprintFromStringBuffer contents
                 pure (mbFingerprint, (diag, Just modu))
 
-getLocatedImportsRule :: _ => WRule
+getLocatedImportsRule :: WRule
 getLocatedImportsRule =
     define GetLocatedImports $ \file -> do
         pm <- use_ GetParsedModule file
@@ -246,7 +257,9 @@ getLocatedImportsRule =
 
 -- | Given a target file path, construct the raw dependency results by following
 -- imports recursively.
-rawDependencyInformation :: _ => NormalizedFilePath -> ActionM t m RawDependencyInformation
+rawDependencyInformation :: (Reflex t, MonadIO m, MonadSample t m)
+                          => NormalizedFilePath
+                          -> ActionM t m RawDependencyInformation
 rawDependencyInformation f = do
     let initialArtifact = ArtifactsLocation f (ModLocation (Just $ fromNormalizedFilePath f) "" "") False
         (initialId, initialMap) = getPathId initialArtifact emptyPathIdMap
@@ -313,7 +326,7 @@ getDependencyInformationRule =
        pure ([], Just $  rawDepInfo)
        -}
 
-reportImportCyclesRule :: _ => WRule
+reportImportCyclesRule :: WRule
 reportImportCyclesRule =
     defineEarlyCutoff ReportImportCycles $ \file -> fmap (\errs -> if null errs then (Just "1", ([], Just ())) else (Just "0", (errs, Nothing))) $ do
         DependencyInformation{..} <- use_ GetDependencyInformation file
@@ -348,7 +361,7 @@ reportImportCyclesRule =
 
 -- returns all transitive dependencies in topological order.
 -- NOTE: result does not include the argument file.
-getDependenciesRule :: _ => WRule
+getDependenciesRule :: WRule
 getDependenciesRule =
     defineEarlyCutoff GetDependencies $ \file -> do
 --        depInfo <- use_ GetDependencyInformation file
@@ -360,7 +373,7 @@ getDependenciesRule =
         return (fingerprintToBS . fingerprintFingerprints <$> mbFingerprints, ([], transitiveDeps depInfo file))
 
 -- Source SpanInfo is used by AtPoint and Goto Definition.
-getSpanInfoRule :: _ => WRule
+getSpanInfoRule :: WRule
 getSpanInfoRule =
     define GetSpanInfo $ \file -> do
         tc <- use_ GetTypecheckedModule file
@@ -375,14 +388,16 @@ getSpanInfoRule =
         return ([], Just x)
 
 -- Typechecks a module.
-typeCheckRule :: _ => WRule
+typeCheckRule ::  WRule
 typeCheckRule = define GetTypecheckedModule typeCheckRuleDefinition
 
 -- This is factored out so it can be directly called from the GetModIface
 -- rule. Directly calling this rule means that on the initial load we can
 -- garbage collect all the intermediate typechecked modules rather than
 -- retain the information forever in the shake graph.
-typeCheckRuleDefinition :: _ => NormalizedFilePath -> ActionM t m (IdeResult TcModuleResult)
+typeCheckRuleDefinition :: (Reflex t, MonadIO m, MonadSample t m)
+                          => NormalizedFilePath
+                          -> ActionM t m (IdeResult TcModuleResult)
 typeCheckRuleDefinition file = do
   pm   <- use_ GetParsedModule file
   deps <- use_ GetDependencies file
@@ -420,7 +435,9 @@ typeCheckRuleDefinition file = do
     xopt LangExt.TemplateHaskell dflags || xopt LangExt.QuasiQuotes dflags
 
 
-generateCore :: _ => NormalizedFilePath -> ActionM t m (IdeResult (SafeHaskellMode, CgGuts, ModDetails))
+generateCore :: (Reflex t, MonadIO m, MonadSample t m)
+              => NormalizedFilePath
+              -> ActionM t m (IdeResult (SafeHaskellMode, CgGuts, ModDetails))
 generateCore file = do
     deps <- use_ GetDependencies file
     (tm:tms) <- uses_ GetTypecheckedModule (file:transitiveModuleDeps deps)
@@ -428,11 +445,11 @@ generateCore file = do
     packageState <- hscEnv <$> use_ GhcSession file
     liftIO $ compileModule packageState [(tmrModSummary x, tmrModInfo x) | x <- tms] tm
 
-generateCoreRule :: _ => WRule
+generateCoreRule :: WRule
 generateCoreRule =
     define GenerateCore generateCore
 
-generateByteCodeRule :: _ => WRule
+generateByteCodeRule :: WRule
 generateByteCodeRule =
     define GenerateByteCode $ \file -> do
       deps <- use_ GetDependencies file
@@ -454,7 +471,7 @@ loadGhcSession = do
         GhcSessionFun fun <- useNoFile_ GhcSessionIO
         let ForallAction val = fun $ fromNormalizedFilePath file
         res <- val
-        opts <- getIdeOptions
+        --opts <- getIdeOptions
         return (Nothing, ([], Just res))
 
 getHiFileRule :: WRule
