@@ -41,7 +41,8 @@ import Development.IDE.Types.Location
 import Development.IDE.Types.Options
 import qualified Data.Map as M
 import Reflex.Host.Basic
---import Debug.Trace
+import Debug.Trace
+import Data.GADT.Show
 
 import qualified Language.Haskell.LSP.Messages as LSP
 import qualified Language.Haskell.LSP.Types as LSP
@@ -176,7 +177,7 @@ mkModule genv rules_raw mm (D.Some sel) f = do
   -- Run the specific rule which triggered the state for this module to be
   -- initialised.
   case D.lookup sel rule_dyns_map of
-    Just (MDynamic d) -> forceThunk (unearly <$> d)
+    Just d -> forceThunk (unearly <$> getMD d)
     Nothing -> return ()
 
   -- Combine together diagnostics for all the rules
@@ -195,14 +196,14 @@ mkModule genv rules_raw mm (D.Some sel) f = do
     -- * If any of the dependencies change
     rule :: ShakeDefinition m t
          -> m (DSum RuleType (MDynamic t), Event t DiagsInfo)
-    rule (name :=> (WrappedEarlyActionWithTrigger act user_trig)) = mdo
+    rule (name :=> (WrappedEarlyActionWithTrigger act user_trig disp)) = mdo
         --
         user_trig' <- ([UserTrigger] <$) <$> runReaderT (user_trig f) renv
         let rebuild_trigger = (fmap (\e -> leftmost [user_trig', start_trigger, e]) deps')
---        act_trig <- Reflex.traceEvent ident <$> switchHoldPromptly start_trigger rebuild_trigger
+        act_trig <- Reflex.traceEvent ident <$> switchHoldPromptly start_trigger rebuild_trigger
         -- switchHoldPromptly is important here so that updats to dynamics
         -- in the same frame will immediately trigger a rebuild.
-        act_trig <- switchHoldPromptly start_trigger rebuild_trigger
+--        act_trig <- switchHoldPromptly start_trigger rebuild_trigger
 
         -- When the trigger fires, run the rule
         pm <- performAction renv (act f) act_trig
@@ -221,9 +222,12 @@ mkModule genv rules_raw mm (D.Some sel) f = do
         early_res <- early (fmap joinThunk <$> res)
         -- Attach the file version and rule name to the diagnostics
         diags_with_mod <- performEvent (get_mod <$> attach vfs_b (updated pm_diags))
---        let ident = show f ++ ": " ++ gshow name
---        return (name :=> (MDynamic $ traceDynE ("D:" ++ ident) early_res), diags_with_mod)
-        return ((name :=> MDynamic early_res), diags_with_mod)
+        let ident = show f ++ ": " ++ gshow name
+        return (name :=> (MDynamic
+                            { getMD = traceDynE disp ("D:" ++ ident) early_res
+                            })
+               , diags_with_mod)
+--        return ((name :=> MDynamic early_res), diags_with_mod)
 --
       where
         get_mod (vfs, ds) = do
@@ -234,7 +238,12 @@ mkModule genv rules_raw mm (D.Some sel) f = do
 
     renv = REnv genv mm
 
---traceDynE p d = traceDynWith (const $ Debug.Trace.traceEvent p p) d
+--traceDynE :: Maybe (a -> String) ->
+traceDynE f p d = traceDynWith (\s -> Debug.Trace.traceEvent (msg s) (msg s) ) d
+  where
+    msg x = case f of
+              Nothing -> p
+              Just f' -> p ++ ":" ++ showEarly (showThunk f') x
 
 
 

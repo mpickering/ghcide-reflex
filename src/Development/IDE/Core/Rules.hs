@@ -475,7 +475,7 @@ loadGhcSession = do
         return (Nothing, ([], Just res))
 
 getHiFileRule :: WRule
-getHiFileRule = defineEarlyCutoff GetHiFile $ \f -> do
+getHiFileRule = defineEarlyCutoffShow GetHiFile show $ \f -> do
   session <- hscEnv <$> use_ GhcSession f
   -- get all dependencies interface files, to check for freshness
   (deps,_)<- use_ GetLocatedImports f

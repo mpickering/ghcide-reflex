@@ -87,19 +87,37 @@ partitionRules (WRule (UnitAction u) : xs) = let (rs, gs, us) = partitionRules x
 -- | A rule which always triggers recompilation and is only triggered by
 -- dependencies updating.
 define :: RuleType a -> (forall t . C t => Action t (HostFrame t) a) -> WRule
-define rn a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger (fmap (fmap (Nothing,)) a) (const $ return never)))
+define rn a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger (fmap (fmap (Nothing,)) a) (const $ return never) Nothing))
+
+defineShow :: RuleType a
+              -> (forall t . C t => Action t (HostFrame t) a)
+              -> (a -> String)
+              -> WRule
+defineShow rn a disp = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger (fmap (fmap (Nothing,)) a) (const $ return never) (Just disp)))
 
 -- | A rule which includes an additional hash which can be used to cutoff
 -- further updates.
-defineEarlyCutoff :: RuleType a -> (forall t . C t => EarlyAction t (HostFrame t) a) -> WRule
-defineEarlyCutoff rn a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a (const $ return never)))
+defineEarlyCutoff :: RuleType a
+                    -> (forall t . C t => EarlyAction t (HostFrame t) a)
+                    -> WRule
+defineEarlyCutoff rn a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a (const $ return never) Nothing))
+
+-- | A rule which includes an additional hash which can be used to cutoff
+-- further updates.
+defineEarlyCutoffShow :: RuleType a
+                    -> (a -> String)
+                    -> (forall t . C t => EarlyAction t (HostFrame t) a)
+                    -> WRule
+defineEarlyCutoffShow rn disp a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a (const $ return never) (Just disp)))
 
 -- | A rule which has early cutoff and also an additional external trigger
 -- which dictates when to update.
 defineGen :: RuleType a -> (forall t . C t => NormalizedFilePath -> BasicM t (BasicGuestWrapper t) (Event t ()))
                         -> (forall t . C t => EarlyAction t (HostFrame t) a)
                         -> WRule
-defineGen rn trig a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a trig))
+defineGen rn trig a = WRule (ModRule (rn :=> WrappedEarlyActionWithTrigger a trig Nothing))
+
+
 
 -- | An action which is run on initialisation but contributes nothing to
 -- the global state.
@@ -174,10 +192,6 @@ data IdeState = IdeState
 
 --data Priority = Priority Int
 --setPriority a = return a
-
-data HoverMap = HoverMap
-type Diagnostics = String
-type RMap t a = M.Map NormalizedFilePath (Dynamic t a)
 
 
 newtype MDynamic t a = MDynamic { getMD :: Dynamic t (Early (Thunk a)) }
@@ -611,6 +625,8 @@ data WrappedEarlyActionWithTrigger m t a =
                                 -- The trigger can depend on the state but
                                 -- can't fail or write events
                                 , actionTrigger :: NormalizedFilePath -> BasicM t m (Event t ())
+                                -- For debugging
+                                , display :: Maybe (a -> String)
                                 }
 
 newtype WrappedActionM m t a =

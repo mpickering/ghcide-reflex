@@ -26,6 +26,11 @@ import Control.Monad.Fix
 -- Like a Maybe, but has to be activated the first time we try to access it
 data Thunk a = Value a | Awaiting | Seed (IO ()) deriving Functor
 
+showThunk :: (a -> String) -> Thunk a -> String
+showThunk f (Value a) = "(V:" ++ f a ++ ")"
+showThunk _f Awaiting  = "Awaiting"
+showThunk _f Seed{}    = "Seed"
+
 joinThunk :: Thunk (Maybe a) -> Thunk a
 joinThunk (Value m) = maybe Awaiting Value m
 joinThunk Awaiting = Awaiting
